@@ -392,6 +392,14 @@ class Synthesizer:
             out_lines = self.merge_semantic_steps(out_lines)
             # clean leavening mentions if needed
             out_lines = self.remove_invalid_leavening_from_steps(out_lines, merged_ings)
+            # --- Ensure generated prep lines (from merged ingredients) are present ---
+            if prep_from_ings:
+                prep_norm = [self._normalize_step_text(p) for p in prep_from_ings]
+                # insert missing prep lines at start, preserving order (first prep_from_ings[0] first)
+                for p in prep_norm[::-1]:  # insert in reverse so original order is preserved
+                    if not any(p.lower() in s.lower() for s in out_lines):
+                        out_lines.insert(0, p)
+            # ------------------------------------------------------------------------
             generated_text = "\n".join(out_lines)
             ai_conf = self.compute_ai_confidence(len(top_recipes), out_lines, generated_text)
             validator_conf = round(min(1.0, ai_conf * 0.8), 3)
@@ -450,6 +458,14 @@ class Synthesizer:
             out_lines = self.reorder_steps(out_lines)
         out_lines = self.merge_semantic_steps(out_lines)
         out_lines = self.remove_invalid_leavening_from_steps(out_lines, merged_ings)
+        # --- Ensure generated prep lines (from merged ingredients) are present ---
+        if prep_from_ings:
+            prep_norm = [self._normalize_step_text(p) for p in prep_from_ings]
+            # insert missing prep lines at start, preserving order (first prep_from_ings[0] first)
+            for p in prep_norm[::-1]:  # insert in reverse so original order is preserved
+                if not any(p.lower() in s.lower() for s in out_lines):
+                    out_lines.insert(0, p)
+        # ------------------------------------------------------------------------
 
         generated_text = generated if isinstance(generated, str) else str(generated)
         ai_conf = self.compute_ai_confidence(len(top_recipes), out_lines, generated_text)
