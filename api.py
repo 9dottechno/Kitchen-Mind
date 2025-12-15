@@ -277,16 +277,24 @@ def validate_recipe(
     validator_id: str = Query(...),
     db: Session = Depends(get_db)
 ):
-    """Validate a recipe (validator only)."""
+    """Validate a recipe with AI validator (no RMDT for AI).
+    
+    Workflow:
+    - confidence >= 90%: AUTO-APPROVED → Added to database
+    - confidence < 90% and approved=True: MANUALLY APPROVED → Added to database
+    - confidence < 90% and approved=False: REJECTED → AI suggestions sent to trainer
+    
+    NOTE: AI validators do not receive RMDT rewards.
+    """
     validator = km_instance.users.get(validator_id)
     if not validator:
         raise HTTPException(status_code=404, detail="Validator not found")
     
     if validator.role not in ["validator", "admin"]:
-        raise HTTPException(status_code=403, detail="Only validators can validate recipes")
+        raise HTTPException(status_code=403, detail="Only AI validators (role='validator') can validate recipes")
     
     try:
-        km_instance.validate_recipe(
+        validated_recipe = km_instance.validate_recipe(
             validator,
             recipe_id,
             validation.approved,
@@ -298,13 +306,26 @@ def validate_recipe(
         postgres_repo = PostgresRecipeRepository(db)
         recipe = postgres_repo.get(recipe_id)
         if recipe:
-            postgres_repo.update(recipe)
+            postgres_repo.update(validated_recipe)
         
-        return {
-            "message": "Recipe validated successfully",
+        result = {
+            "message": "Recipe validated successfully by AI validator",
             "recipe_id": recipe_id,
-            "approved": validation.approved
+            "title": validated_recipe.title,
+            "approved": validated_recipe.approved,
+            "confidence": validation.confidence,
+            "auto_approved": validation.confidence >= 0.9,
+            "validator_type": "AI",
+            "rmdt_reward": "None (AI validators do not receive RMDT)"
         }
+        
+        # Include AI suggestions for rejected recipes
+        if not validated_recipe.approved and validated_recipe.rejection_suggestions:
+            result["rejected"] = True
+            result["ai_suggestions"] = validated_recipe.rejection_suggestions
+            result["message"] = "Recipe rejected - AI suggestions provided to trainer for improvement"
+        
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -400,7 +400,7 @@ def example_run():
 
     # ---------- Balances ----------
     print('\n--- User Balances (RMDT) ---')
-    for usr in (t, v, u):
+    for usr in (t, u):
         print(f"{usr.username} ({usr.role}): {usr.rmdt_balance} RMDT")
 
 

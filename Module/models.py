@@ -25,6 +25,7 @@ class Recipe:
     validator_confidence: float = 0.0
     popularity: int = 0
     approved: bool = False
+    rejection_suggestions: List[str] = field(default_factory=list)
 
     def scale(self, target_servings: int) -> "Recipe":
         if self.servings <= 0:
