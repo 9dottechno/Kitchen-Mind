@@ -1,6 +1,7 @@
+print("[DEBUG] test_api.py loaded")
 """
 Test script for KitchenMind API
-Tests all major endpoints without pytest
+Tests all endpoints of KitchenMind API (new schema)
 """
 import requests
 import json
@@ -46,19 +47,139 @@ def test_health_check():
         return False
 
 
+
+def test_create_role() -> Dict[str, Any]:
+    """Test role creation."""
+    print_test("Create Role")
+    try:
+        role_data = {
+            "role_id": "trainer",
+            "role_name": "TRAINER",
+            "description": "Trainer role"
+        }
+        response = requests.post(f"{BASE_URL}/roles", json=role_data)
+        if response.status_code in (200, 201):
+            role = response.json()
+            print_success(f"Role created: {role['role_name']}")
+            return role
+        elif response.status_code == 409:
+            # Fetch existing role if duplicate
+            get_resp = requests.get(f"{BASE_URL}/roles/{role_data['role_id']}")
+            if get_resp.status_code == 200:
+                role = get_resp.json()
+                print_success(f"Role exists: {role['role_name']}")
+                return role
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+
 def test_create_user() -> Dict[str, Any]:
     """Test user creation."""
     print_test("Create User")
     try:
         user_data = {
-            "username": "test_trainer",
-            "role": "trainer"
+            "name": "Test Trainer",
+            "email": "test_trainer@example.com",
+            "login_identifier": "test_trainer",
+            "password_hash": "hashedpassword",
+            "auth_type": "password",
+            "role_id": "trainer",
+            "dietary_preference": "VEG"
         }
         response = requests.post(f"{BASE_URL}/users", json=user_data)
-        if response.status_code == 200:
+        if response.status_code in (200, 201):
             user = response.json()
-            print_success(f"User created: {user['username']}")
+            print_success(f"User created: {user['name']}")
             return user
+        elif response.status_code == 409:
+            # Fetch existing user if duplicate
+            get_resp = requests.get(f"{BASE_URL}/users/by_email/{user_data['email']}")
+            if get_resp.status_code == 200:
+                user = get_resp.json()
+                print_success(f"User exists: {user['name']}")
+                return user
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+def test_create_admin_profile(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Test admin profile creation."""
+    print_test("Create Admin Profile")
+    if not user:
+        print_error("No user provided")
+        return None
+    try:
+        admin_data = {
+            "user_id": user["user_id"],
+            "created_by": "system",
+            "is_super_admin": True
+        }
+        response = requests.post(f"{BASE_URL}/admin_profiles", json=admin_data)
+        if response.status_code in (200, 201):
+            admin = response.json()
+            print_success(f"Admin profile created: {admin['admin_id']}")
+            return admin
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+def test_create_session(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Test session creation."""
+    print_test("Create Session")
+    if not user:
+        print_error("No user provided")
+        return None
+    try:
+        session_data = {
+            "user_id": user["user_id"]
+        }
+        response = requests.post(f"{BASE_URL}/sessions", json=session_data)
+        if response.status_code in (200, 201):
+            session = response.json()
+            print_success(f"Session created: {session['session_id']}")
+            return session
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+def test_create_admin_action(admin: Dict[str, Any]) -> Dict[str, Any]:
+    """Test admin action log creation."""
+    print_test("Create Admin Action Log")
+    if not admin:
+        print_error("No admin provided")
+        return None
+    try:
+        action_data = {
+            "admin_id": admin["admin_id"],
+            "action_type": "MANUAL_ADJUSTMENT",
+            "target_type": "USER",
+            "target_id": admin["user_id"],
+            "description": "Manual adjustment for test"
+        }
+        response = requests.post(f"{BASE_URL}/admin_actions", json=action_data)
+        if response.status_code in (200, 201):
+            action = response.json()
+            print_success(f"Admin action logged: {action['action_id']}")
+            return action
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
@@ -70,6 +191,7 @@ def test_create_user() -> Dict[str, Any]:
 
 def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
     """Test recipe submission."""
+    print("[DEBUG] test_submit_recipe called")
     print_test("Submit Recipe")
     if not trainer:
         print_error("No trainer provided")
@@ -154,17 +276,44 @@ def test_create_validator() -> Dict[str, Any]:
     """Test validator user creation."""
     print_test("Create Validator User")
     try:
+        # Ensure validator role exists
+        role_data = {
+            "role_id": "validator",
+            "role_name": "VALIDATOR",
+            "description": "Validator role"
+        }
+        role_resp = requests.post(f"{BASE_URL}/roles", json=role_data)
+        if role_resp.status_code not in (200, 201, 409):
+            print_error(f"Failed to ensure validator role: {role_resp.text}")
+            return None
+
         user_data = {
-            "username": "test_validator",
-            "role": "validator"
+            "name": "Test Validator",
+            "email": "test_validator@example.com",
+            "login_identifier": "test_validator",
+            "password_hash": "hashedpassword",
+            "auth_type": "password",
+            "role_id": "validator",
+            "dietary_preference": "VEG"
         }
         response = requests.post(f"{BASE_URL}/users", json=user_data)
-        if response.status_code == 200:
+        if response.status_code in (200, 201):
             user = response.json()
-            print_success(f"Validator created: {user['username']}")
+            print_success(f"Validator created: {user['name']}")
             return user
+        elif response.status_code == 409:
+            # Fetch existing user if duplicate
+            get_resp = requests.get(f"{BASE_URL}/users/by_email/{user_data['email']}")
+            if get_resp.status_code == 200:
+                user = get_resp.json()
+                print_success(f"Validator exists: {user['name']}")
+                return user
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
         else:
             print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
             return None
     except Exception as e:
         print_error(f"Error: {e}")
@@ -288,69 +437,78 @@ def test_plan_event():
         return False
 
 
+
 def run_all_tests():
-    """Run all tests."""
+    """Run all tests for all endpoints."""
     print(f"\n{BLUE}{'='*50}")
-    print("KitchenMind API Test Suite")
+    print("KitchenMind API Test Suite (Full Endpoints)")
     print(f"{'='*50}{RESET}")
-    
+
     results = {
         "health_check": test_health_check(),
     }
-    
-    # Create users
-    trainer = test_create_user()
-    results["create_user"] = trainer is not None
-    
-    validator = test_create_validator()
-    results["create_validator"] = validator is not None
-    
-    # Regular user
-    user_response = requests.post(
-        f"{BASE_URL}/users",
-        json={"username": "test_user", "role": "user"}
-    )
-    regular_user = user_response.json() if user_response.status_code == 200 else None
-    
-    # Submit recipe
-    recipe = test_submit_recipe(trainer)
+
+    # Create role
+    role = test_create_role()
+    results["create_role"] = role is not None
+
+    # Create user
+    user = test_create_user()
+    results["create_user"] = user is not None
+
+    # Create admin profile
+    admin_profile = test_create_admin_profile(user)
+    results["create_admin_profile"] = admin_profile is not None
+
+    # Create session
+    session = test_create_session(user)
+    results["create_session"] = session is not None
+
+    # Create admin action log
+    admin_action = test_create_admin_action(admin_profile)
+    results["create_admin_action"] = admin_action is not None
+
+    # Submit recipe (reuse test_submit_recipe)
+    recipe = test_submit_recipe(user)
     results["submit_recipe"] = recipe is not None
-    
+
     # Get recipes
     recipes = test_get_recipes()
     results["get_recipes"] = len(recipes) > 0
-    
+
     # Get single recipe
     if recipe:
         results["get_single_recipe"] = test_get_recipe(recipe)
-    
-    # Validate recipe
+
+    # Validate recipe (reuse test_create_validator and test_validate_recipe)
+    validator = test_create_validator()
+    results["create_validator"] = validator is not None
     if recipe and validator:
         results["validate_recipe"] = test_validate_recipe(validator, recipe)
-    
+
     # Rate recipe
-    if recipe and regular_user:
-        results["rate_recipe"] = test_rate_recipe(regular_user, recipe)
-    
+    if recipe and user:
+        results["rate_recipe"] = test_rate_recipe(user, recipe)
+
     # Synthesize recipe
-    if regular_user:
-        results["synthesize_recipe"] = test_synthesize_recipe(regular_user)
-    
+    if user:
+        results["synthesize_recipe"] = test_synthesize_recipe(user)
+
     # Plan event
     results["plan_event"] = test_plan_event()
-    
+
     # Summary
     print(f"\n{BLUE}{'='*50}")
     print("Test Summary")
     print(f"{'='*50}{RESET}")
-    
+
     passed = sum(1 for v in results.values() if v)
     total = len(results)
-    
+
     for test_name, result in results.items():
         status = f"{GREEN}✓ PASS{RESET}" if result else f"{RED}✗ FAIL{RESET}"
         print(f"  {test_name}: {status}")
-    
+
     print(f"\n{BLUE}Total: {passed}/{total} tests passed{RESET}\n")
 
 
