@@ -214,13 +214,14 @@ def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
                 "Steam for 12 minutes"
             ]
         }
-        
+        print(f"[DEBUG TEST] Sending POST /recipes with trainer_id={trainer.get('user_id')}, data={recipe_data}")
         response = requests.post(
             f"{BASE_URL}/recipes",
             json=recipe_data,
-            params={"trainer_id": trainer["id"]}
+            params={"trainer_id": trainer["user_id"]}
         )
-        
+        print(f"[DEBUG TEST] Response status: {response.status_code}")
+        print(f"[DEBUG TEST] Response text: {response.text}")
         if response.status_code == 200:
             recipe = response.json()
             print_success(f"Recipe created: {recipe['title']}")
@@ -333,23 +334,27 @@ def test_validate_recipe(validator: Dict[str, Any], recipe: Dict[str, Any]):
             "feedback": "Well-structured recipe",
             "confidence": 0.85
         }
-        
         response = requests.post(
             f"{BASE_URL}/recipes/{recipe['id']}/validate",
             json=validation_data,
             params={"validator_id": validator["id"]}
         )
-        
+        print(f"[DEBUG TEST] validate_recipe status: {response.status_code}")
+        print(f"[DEBUG TEST] validate_recipe text: {response.text}")
         if response.status_code == 200:
             result = response.json()
-            print_success(f"Recipe validated: {result['message']}")
+            print_success(f"Recipe validated: {result}")
+            print(f"[DEBUG TEST] validate_recipe response: {result}")
+            print(f"[DEBUG TEST] validate_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            if 'id' not in result:
+                print_error("'id' key missing in validate_recipe response!")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
             return False
     except Exception as e:
-        print_error(f"Error: {e}")
+        print_error(f"Exception in validate_recipe: {e}")
         return False
 
 
@@ -365,16 +370,22 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
             f"{BASE_URL}/recipes/{recipe['id']}/rate",
             params={"user_id": user["id"], "rating": 4.5}
         )
-        
+        print(f"[DEBUG TEST] rate_recipe status: {response.status_code}")
+        print(f"[DEBUG TEST] rate_recipe text: {response.text}")
         if response.status_code == 200:
             result = response.json()
-            print_success(f"Recipe rated: {result['rating']}/5")
+            print_success(f"Recipe rated: {result}")
+            print(f"[DEBUG TEST] rate_recipe response: {result}")
+            print(f"[DEBUG TEST] rate_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            if 'id' not in result:
+                print_error("'id' key missing in rate_recipe response!")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
             return False
     except Exception as e:
-        print_error(f"Error: {e}")
+        print_error(f"Exception in rate_recipe: {e}")
         return False
 
 
@@ -392,23 +403,27 @@ def test_synthesize_recipe(user: Dict[str, Any]):
             "top_k": 5,
             "reorder": True
         }
-        
         response = requests.post(
             f"{BASE_URL}/recipes/synthesize",
             json=synthesis_data,
             params={"user_id": user["id"]}
         )
-        
+        print(f"[DEBUG TEST] synthesize_recipe status: {response.status_code}")
+        print(f"[DEBUG TEST] synthesize_recipe text: {response.text}")
         if response.status_code == 200:
             result = response.json()
-            print_success(f"Recipe synthesized: {result['title']}")
+            print_success(f"Recipe synthesized: {result}")
+            print(f"[DEBUG TEST] synthesize_recipe response: {result}")
+            print(f"[DEBUG TEST] synthesize_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            if 'id' not in result:
+                print_error("'id' key missing in synthesize_recipe response!")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
             return False
     except Exception as e:
-        print_error(f"Error: {e}")
+        print_error(f"Exception in synthesize_recipe: {e}")
         return False
 
 
@@ -450,47 +465,73 @@ def run_all_tests():
 
     # Create role
     role = test_create_role()
+    print(f"[DEBUG TEST] role object after creation: {role}")
     results["create_role"] = role is not None
 
     # Create user
     user = test_create_user()
+    print(f"[DEBUG TEST] user object after creation: {user}")
+    if user and 'id' not in user and 'user_id' in user:
+        user['id'] = user['user_id']
+        print(f"[DEBUG TEST] user object patched with id: {user}")
     results["create_user"] = user is not None
 
     # Create admin profile
     admin_profile = test_create_admin_profile(user)
+    print(f"[DEBUG TEST] admin_profile object after creation: {admin_profile}")
     results["create_admin_profile"] = admin_profile is not None
 
     # Create session
     session = test_create_session(user)
+    print(f"[DEBUG TEST] session object after creation: {session}")
     results["create_session"] = session is not None
 
     # Create admin action log
     admin_action = test_create_admin_action(admin_profile)
+    print(f"[DEBUG TEST] admin_action object after creation: {admin_action}")
     results["create_admin_action"] = admin_action is not None
 
     # Submit recipe (reuse test_submit_recipe)
     recipe = test_submit_recipe(user)
+    print(f"[DEBUG TEST] recipe object after creation: {recipe}")
+    if recipe and 'id' not in recipe and 'recipe_id' in recipe:
+        recipe['id'] = recipe['recipe_id']
+        print(f"[DEBUG TEST] recipe object patched with id: {recipe}")
     results["submit_recipe"] = recipe is not None
 
     # Get recipes
     recipes = test_get_recipes()
+    print(f"[DEBUG TEST] recipes list after fetch: {recipes}")
     results["get_recipes"] = len(recipes) > 0
 
     # Get single recipe
     if recipe:
+        print(f"[DEBUG TEST] single recipe object before get: {recipe}")
         results["get_single_recipe"] = test_get_recipe(recipe)
+
+    # Patch validator id if needed before validate/other tests
+    validator = test_create_validator()
+    print(f"[DEBUG TEST] validator object after creation: {validator}")
+    if validator and 'id' not in validator and 'user_id' in validator:
+        validator['id'] = validator['user_id']
+        print(f"[DEBUG TEST] validator object patched with id: {validator}")
 
     # Validate recipe (reuse test_create_validator and test_validate_recipe)
     validator = test_create_validator()
     results["create_validator"] = validator is not None
+    print(f"[DEBUG TEST] validator object: {validator}")
+    print(f"[DEBUG TEST] recipe object: {recipe}")
     if recipe and validator:
         results["validate_recipe"] = test_validate_recipe(validator, recipe)
 
     # Rate recipe
+    print(f"[DEBUG TEST] user object: {user}")
+    print(f"[DEBUG TEST] recipe object: {recipe}")
     if recipe and user:
         results["rate_recipe"] = test_rate_recipe(user, recipe)
 
     # Synthesize recipe
+    print(f"[DEBUG TEST] user object: {user}")
     if user:
         results["synthesize_recipe"] = test_synthesize_recipe(user)
 

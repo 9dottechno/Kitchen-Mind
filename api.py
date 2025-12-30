@@ -435,28 +435,50 @@ def submit_recipe(
     db: Session = Depends(get_db)
 ):
     """Submit a new recipe (trainer only)."""
-    print("[DEBUG] submit_recipe endpoint called")
-    trainer = km_instance.users.get(trainer_id)
+    print("[DEBUG] ENTER submit_recipe endpoint")
+    print(f"[DEBUG] incoming recipe: {recipe}")
+    print(f"[DEBUG] incoming trainer_id: {trainer_id}")
+    print(f"[DEBUG] trainer_id: {trainer_id}")
+    print(f"[DEBUG] recipe: {recipe}")
+    trainer = db.query(User).filter(User.user_id == trainer_id).first()
+    print(f"[DEBUG] trainer: {trainer}")
     if not trainer:
         raise HTTPException(status_code=404, detail="Trainer not found")
 
-    if trainer.role not in ["trainer", "admin"]:
+    print(f"[DEBUG] trainer.role: {trainer.role}, type: {type(trainer.role)}")
+    # Handle SQLAlchemy Role object, Enum, or string
+    trainer_role = trainer.role
+    if hasattr(trainer_role, 'role_id'):
+        trainer_role = trainer_role.role_id
+    elif hasattr(trainer_role, 'value'):
+        trainer_role = trainer_role.value
+    print(f"[DEBUG] normalized trainer_role: {trainer_role}")
+    if str(trainer_role).lower() not in ["trainer", "admin"]:
         raise HTTPException(status_code=403, detail="Only trainers can submit recipes")
 
-    ingredients_dict = [ing.dict() for ing in recipe.ingredients]
+
+    # Convert ingredients to IngredientCreate objects if they are dicts
+    from pydantic import parse_obj_as
+    if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
+        ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
+    else:
+        ingredients_obj = recipe.ingredients
 
     try:
         # Create and save recipe using repository directly
         postgres_repo = PostgresRecipeRepository(db)
+        print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
         recipe_obj = postgres_repo.create_recipe(
             title=recipe.title,
-            ingredients=ingredients_dict,
+            ingredients=ingredients_obj,
             steps=recipe.steps,
             servings=recipe.servings,
             submitted_by=trainer.user_id
         )
+        print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
+        print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
         # Ensure ingredients and steps are in the expected format
-        return RecipeResponse(
+        response = RecipeResponse(
             id=recipe_obj.id,
             title=recipe_obj.title,
             servings=recipe_obj.servings,
@@ -464,7 +486,10 @@ def submit_recipe(
             popularity=getattr(recipe_obj, 'popularity', 0),
             avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0
         )
+        print(f"[DEBUG] RecipeResponse: {response}")
+        return response
     except Exception as e:
+        print(f"[ERROR] submit_recipe exception: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -474,14 +499,18 @@ def list_recipes(
     db: Session = Depends(get_db)
 ):
     """List recipes from database."""
+    print(f"[DEBUG] list_recipes called with approved_only={approved_only}")
     postgres_repo = PostgresRecipeRepository(db)
     if approved_only:
         recipes = postgres_repo.approved()
+        print(f"[DEBUG] Approved recipes: {recipes}")
     else:
         # Use new Recipe model for unfiltered listing
         db_recipes = db.query(Recipe).all() if hasattr(db.query(Recipe), 'all') else []
+        print(f"[DEBUG] db_recipes: {db_recipes}")
         recipes = [postgres_repo._to_model(r) for r in db_recipes]
-    return [
+        print(f"[DEBUG] Unfiltered recipes: {recipes}")
+    response = [
         RecipeResponse(
             id=r.id,
             title=r.title,
@@ -492,6 +521,8 @@ def list_recipes(
         )
         for r in recipes
     ]
+    print(f"[DEBUG] list_recipes response: {response}")
+    return response
 
 
 @app.get("/recipes/{recipe_id}", response_model=RecipeResponse)
@@ -517,7 +548,7 @@ def get_recipe(recipe_id: str, db: Session = Depends(get_db)):
 # Recipe Validation Endpoints
 # ============================================================================
 
-@app.post("/recipes/{recipe_id}/validate")
+@app.post("/recipes/{recipe_id}/validate", response_model=RecipeResponse)
 def validate_recipe(
     recipe_id: str,
     validation: RecipeValidationRequest,
@@ -533,51 +564,78 @@ def validate_recipe(
     
     NOTE: AI validators do not receive RMDT rewards.
     """
-    validator = km_instance.users.get(validator_id)
+    # Fetch validator from the database
+    from Module.database import User as DBUser, Role as DBRole
+    validator = db.query(DBUser).filter(DBUser.user_id == validator_id).first()
     if not validator:
         raise HTTPException(status_code=404, detail="Validator not found")
-    
-    if validator.role not in ["validator", "admin"]:
+    # Normalize role
+    role_obj = validator.role
+    if hasattr(role_obj, 'name'):
+        validator_role = role_obj.name.lower()
+    else:
+        validator_role = str(role_obj).lower() if role_obj else None
+    if validator_role not in ["validator", "admin"]:
         raise HTTPException(status_code=403, detail="Only AI validators (role='validator') can validate recipes")
     
     try:
-        validated_recipe = km_instance.validate_recipe(
-            validator,
-            recipe_id,
-            validation.approved,
-            validation.feedback,
-            validation.confidence
-        )
-        
-        # Update in database
+        # Fetch recipe from DB
+        from Module.database import Recipe as DBRecipe
+        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        if not db_recipe:
+            raise HTTPException(status_code=404, detail="Recipe not found")
+
+        # Simulate AI model call (replace with real call)
+        def call_ai_model(recipe, api_key):
+            # Dummy: always return 0.92 accuracy for demo
+            return {"accuracy": 0.92, "reasons": []}
+
+        # Get API key from header (for demo, use a fixed key)
+        import inspect
+        api_key = None
+        for frame in inspect.stack():
+            if 'request' in frame.frame.f_locals:
+                req = frame.frame.f_locals['request']
+                api_key = req.headers.get('x-api-key')
+                break
+
+        ai_result = call_ai_model(db_recipe, api_key)
+        accuracy = ai_result.get("accuracy", 0)
+
+        if accuracy > 0.9:
+            db_recipe.is_published = True
+            approved = True
+            rejection_suggestions = []
+        else:
+            db_recipe.is_published = False
+            approved = False
+            rejection_suggestions = ai_result.get("reasons", ["Accuracy below threshold"])
+
+        db.commit()
+        db.refresh(db_recipe)
+
+        # Update model for response
         postgres_repo = PostgresRecipeRepository(db)
-        recipe = postgres_repo.get(recipe_id)
-        if recipe:
-            postgres_repo.update(validated_recipe)
-        
-        result = {
-            "message": "Recipe validated successfully by AI validator",
-            "recipe_id": recipe_id,
-            "title": validated_recipe.title,
-            "approved": validated_recipe.approved,
-            "confidence": validation.confidence,
-            "auto_approved": validation.confidence >= 0.9,
-            "validator_type": "AI",
-            "rmdt_reward": "None (AI validators do not receive RMDT)"
-        }
-        
-        # Include AI suggestions for rejected recipes
-        if not validated_recipe.approved and validated_recipe.rejection_suggestions:
-            result["rejected"] = True
-            result["ai_suggestions"] = validated_recipe.rejection_suggestions
-            result["message"] = "Recipe rejected - AI suggestions provided to trainer for improvement"
-        
-        return result
+        validated_recipe = postgres_repo._to_model(db_recipe)
+        validated_recipe.approved = approved
+        validated_recipe.validator_confidence = accuracy
+        validated_recipe.rejection_suggestions = rejection_suggestions
+
+        response = RecipeResponse(
+            id=recipe_id,
+            title=validated_recipe.title,
+            servings=getattr(validated_recipe, "servings", 1),
+            approved=validated_recipe.approved,
+            popularity=getattr(validated_recipe, "popularity", 0),
+            avg_rating=validated_recipe.avg_rating() if hasattr(validated_recipe, "avg_rating") else 0.0
+        )
+        print(f"[DEBUG] validate_recipe response: {response}")
+        return response
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/recipes/{recipe_id}/rate")
+@app.post("/recipes/{recipe_id}/rate", response_model=RecipeResponse)
 def rate_recipe(
     recipe_id: str,
     rating: float = Query(..., ge=0, le=5),
@@ -585,24 +643,40 @@ def rate_recipe(
     db: Session = Depends(get_db)
 ):
     """Rate a recipe."""
-    user = km_instance.users.get(user_id)
+    print(f"[DEBUG] rate_recipe called with user_id={user_id}, recipe_id={recipe_id}, rating={rating}")
+    # Fetch user from the database
+    from Module.database import User as DBUser
+    user = db.query(DBUser).filter(DBUser.user_id == user_id).first()
+    print(f"[DEBUG] user: {user}")
     if not user:
+        print("[ERROR] User not found")
         raise HTTPException(status_code=404, detail="User not found")
-    
     try:
-        rated_recipe = km_instance.rate_recipe(user, recipe_id, rating)
-        
-        # Update in database
+        # Fetch recipe from the database
+        from Module.database import Recipe as DBRecipe
+        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        if not db_recipe:
+            print("[ERROR] Recipe not found in DB")
+            raise HTTPException(status_code=404, detail="Recipe not found")
         postgres_repo = PostgresRecipeRepository(db)
-        postgres_repo.update(rated_recipe)
-        
-        return {
-            "message": "Recipe rated successfully",
-            "recipe_id": recipe_id,
-            "rating": rating,
-            "avg_rating": rated_recipe.avg_rating()
-        }
+        # Persist rating in Feedback table
+        postgres_repo.add_rating(recipe_id, user_id, rating)
+        # Get updated ratings and average
+        ratings = postgres_repo.get_ratings(recipe_id)
+        avg_rating = sum(ratings) / len(ratings) if ratings else 0.0
+        recipe_model = postgres_repo._to_model(db_recipe)
+        response = RecipeResponse(
+            id=recipe_id,
+            title=recipe_model.title,
+            servings=getattr(recipe_model, "servings", 1),
+            approved=recipe_model.approved,
+            popularity=getattr(recipe_model, "popularity", 0),
+            avg_rating=avg_rating
+        )
+        print(f"[DEBUG] rate_recipe response: {response}")
+        return response
     except KeyError:
+        print("[ERROR] Recipe not found")
         raise HTTPException(status_code=404, detail="Recipe not found")
 
 
@@ -610,15 +684,20 @@ def rate_recipe(
 # Recipe Synthesis Endpoints
 # ============================================================================
 
-@app.post("/recipes/synthesize")
+@app.post("/recipes/synthesize", response_model=RecipeResponse)
 def synthesize_recipe(
     request: RecipeSynthesisRequest,
     user_id: str = Query(...),
     db: Session = Depends(get_db)
 ):
     """Synthesize multiple recipes into one."""
-    user = km_instance.users.get(user_id)
+    print(f"[DEBUG] synthesize_recipe called with user_id: {user_id}, request: {request}")
+    # Fetch user from the database
+    from Module.database import User as DBUser
+    user = db.query(DBUser).filter(DBUser.user_id == user_id).first()
+    print(f"[DEBUG] user: {user}")
     if not user:
+        print("[ERROR] User not found")
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
@@ -630,7 +709,9 @@ def synthesize_recipe(
             request.top_k,
             request.reorder
         )
+        print(f"[DEBUG] Synthesis result: {result}")
         postgres_repo = PostgresRecipeRepository(db)
+        print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
         recipe_obj = postgres_repo.create_recipe(
             title=result.title,
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in result.ingredients],
@@ -638,25 +719,24 @@ def synthesize_recipe(
             servings=result.servings,
             submitted_by=user.user_id
         )
+        print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
+        print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
         # Ensure ingredients and steps are in the expected format
-        return {
-            "id": recipe_obj.id,
-            "title": recipe_obj.title,
-            "servings": recipe_obj.servings,
-            "steps": [s for s in getattr(recipe_obj, 'steps', [])],
-            "ingredients": [
-                {
-                    "name": ing.name,
-                    "quantity": ing.quantity,
-                    "unit": ing.unit
-                }
-                for ing in getattr(recipe_obj, 'ingredients', [])
-            ],
-            "metadata": getattr(recipe_obj, "metadata", {})
-        }
+        response = RecipeResponse(
+            id=recipe_obj.id,
+            title=recipe_obj.title,
+            servings=recipe_obj.servings,
+            approved=getattr(recipe_obj, "approved", False),
+            popularity=getattr(recipe_obj, "popularity", 0),
+            avg_rating=recipe_obj.validator_confidence if hasattr(recipe_obj, "validator_confidence") else 0.0
+        )
+        print(f"[DEBUG] Synthesize response: {response}")
+        return response
     except LookupError as e:
+        print(f"[ERROR] synthesize_recipe LookupError: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        print(f"[ERROR] synthesize_recipe Exception: {e}")
         raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
 
 

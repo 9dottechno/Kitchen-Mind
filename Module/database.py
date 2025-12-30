@@ -102,6 +102,7 @@ class Recipe(Base):
     __tablename__ = "recipes"
     recipe_id = Column(String, primary_key=True)
     dish_name = Column(String)
+    servings = Column(Integer, nullable=False, default=1)
     current_version_id = Column(String, nullable=True)  # Removed FK to break circular dependency
     created_by = Column(String, ForeignKey("users.user_id"))
     is_published = Column(Boolean, default=False)
