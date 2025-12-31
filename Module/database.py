@@ -35,7 +35,7 @@ class PlanStatusEnum(enum.Enum):
 # Tables
 class Role(Base):
     __tablename__ = "roles"
-    role_id = Column(String, primary_key=True)
+    role_id = Column(String, primary_key=True)  # 'user', 'trainer', 'admin' only
     role_name = Column(String, nullable=False)
     description = Column(String)
     users = relationship("User", back_populates="role")
@@ -58,7 +58,13 @@ class User(Base):
     created_at = Column(DateTime)
     last_login_at = Column(DateTime)
     role = relationship("Role", back_populates="users")
-    admin_profile = relationship("AdminProfile", uselist=False, back_populates="user")
+    is_super_admin = Column(Boolean, default=False)
+    created_by = Column(String)  # user_id of creator (admin)
+    admin_action_type = Column(String)  # last admin action type (if admin)
+    admin_action_target_type = Column(String)  # last admin action target type
+    admin_action_target_id = Column(String)  # last admin action target id
+    admin_action_description = Column(Text)  # last admin action description
+    admin_action_created_at = Column(DateTime)  # last admin action timestamp
     sessions = relationship("Session", back_populates="user")
     feedbacks = relationship("Feedback", back_populates="user")
     point_logs = relationship("PointLog", back_populates="user")
@@ -66,15 +72,6 @@ class User(Base):
     event_plans = relationship("EventPlan", back_populates="user")
     recipes = relationship("Recipe", back_populates="creator")
 
-class AdminProfile(Base):
-    __tablename__ = "admin_profiles"
-    admin_id = Column(String, primary_key=True)
-    user_id = Column(String, ForeignKey("users.user_id"))
-    created_by = Column(String)
-    created_at = Column(DateTime)
-    is_super_admin = Column(Boolean, default=False)
-    user = relationship("User", back_populates="admin_profile")
-    action_logs = relationship("AdminActionLog", back_populates="admin_profile")
 
 class Session(Base):
     __tablename__ = "sessions"
@@ -87,16 +84,6 @@ class Session(Base):
     user_agent = Column(String)
     user = relationship("User", back_populates="sessions")
 
-class AdminActionLog(Base):
-    __tablename__ = "admin_action_logs"
-    action_id = Column(String, primary_key=True)
-    admin_id = Column(String, ForeignKey("admin_profiles.admin_id"))
-    action_type = Column(String)
-    target_type = Column(String)
-    target_id = Column(String)
-    description = Column(Text)
-    created_at = Column(DateTime)
-    admin_profile = relationship("AdminProfile", back_populates="action_logs")
 
 class Recipe(Base):
     __tablename__ = "recipes"

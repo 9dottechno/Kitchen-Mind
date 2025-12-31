@@ -48,11 +48,12 @@ class Recipe:
     def avg_rating(self) -> float:
         return statistics.mean(self.ratings) if self.ratings else 0.0
 
+
 @dataclass
 class User:
     id: str
     username: str
-    role: str = "user"  # user, trainer, validator, admin
+    role: str = "user"  # user, trainer, admin
     rmdt_balance: float = 0.0
 
     def credit(self, amount: float):

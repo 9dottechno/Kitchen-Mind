@@ -24,10 +24,9 @@ class KitchenMind:
         self.users: Dict[str, User] = {}
 
     def create_user(self, username: str, role: str = 'user') -> User:
-        """Create a new user with specified role."""
-        if role not in ['user', 'trainer', 'validator', 'admin']:
-            raise ValueError(f"Invalid role: {role}. Must be one of: user, trainer, validator, admin")
-        
+        """Create a new user with specified role (user, trainer, admin)."""
+        if role not in ['user', 'trainer', 'admin']:
+            raise ValueError(f"Invalid role: {role}. Must be one of: user, trainer, admin")
         user = User(id=str(uuid.uuid4()), username=username, role=role)
         self.users[user.id] = user
         return user
@@ -62,28 +61,23 @@ class KitchenMind:
         self.tokens.reward_trainer_submission(trainer, amount=1.0)
         return recipe
 
-    def validate_recipe(self, validator: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
-        """Validate a recipe with confidence scoring and auto-approval at 90%+ confidence."""
-        if validator.role not in ('validator', 'admin'):
-            raise PermissionError('Only validators or admins can validate recipes.')
-        
+    def validate_recipe(self, admin: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
+        """Validate a recipe with confidence scoring and auto-approval at 90%+ confidence. Only admins can validate."""
+        if admin.role != 'admin':
+            raise PermissionError('Only admins can validate recipes.')
         r = self.recipes.get(recipe_id)
         if r is None:
             raise KeyError(f'Recipe "{recipe_id}" not found')
-        
         # Normalize leavening ingredients
         r.ingredients = self.synth.normalize_leavening(r.ingredients)
-        
         # Validate and normalize confidence score (0.0 to 1.0)
         r.validator_confidence = max(0.0, min(1.0, confidence))
-        
         # Add validator metadata
-        r.metadata['validated_by'] = validator.username
-        r.metadata['validated_by_id'] = validator.id
+        r.metadata['validated_by'] = admin.username
+        r.metadata['validated_by_id'] = admin.id
         r.metadata['confidence_score'] = r.validator_confidence
-        r.metadata['validator_type'] = 'AI'
-        
-        # Auto-approve if confidence >= 90%
+        r.metadata['validator_type'] = 'admin'
+        # Auto-approve if confidence >= 0.9
         if r.validator_confidence >= 0.9:
             r.approved = True
             r.popularity += 1
@@ -91,7 +85,6 @@ class KitchenMind:
             r.metadata['validation_feedback'] = feedback or 'Auto-approved with high confidence (≥90%)'
             r.metadata['auto_approved'] = True
             print(f"✓ Recipe '{r.title}' AUTO-APPROVED (confidence: {r.validator_confidence:.1%})")
-        
         elif approved:
             # Manual approval (confidence < 90%)
             r.approved = True
@@ -100,7 +93,6 @@ class KitchenMind:
             r.metadata['validation_feedback'] = feedback or 'Manually approved'
             r.metadata['auto_approved'] = False
             print(f"✓ Recipe '{r.title}' MANUALLY APPROVED (confidence: {r.validator_confidence:.1%})")
-        
         else:
             # Rejected - generate AI suggestions for trainer
             r.approved = False
@@ -111,9 +103,8 @@ class KitchenMind:
             r.metadata['rejection_reason'] = feedback or "Does not meet quality standards"
             print(f"✗ Recipe '{r.title}' REJECTED (confidence: {r.validator_confidence:.1%})")
             print(f"  Suggestions sent to trainer for improvement")
-        
-        # Reward validator
-        self.tokens.reward_validator(validator, amount=0.5)
+        # Reward admin for validation
+        self.tokens.reward_validator(admin, amount=0.5)
         return r
     
     def _generate_ai_suggestions(self, recipe: Recipe, feedback: Optional[str], confidence: float) -> List[str]:
