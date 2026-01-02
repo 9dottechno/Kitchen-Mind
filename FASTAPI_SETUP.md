@@ -1,3 +1,13 @@
+### User Management
+`POST /user` - Create user
+`GET /user/{user_id}` - Get user details
+### Event Planning
+`POST /event/plan` - Plan event with recipes
+```bash
+curl -X POST "http://localhost:8000/user" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Alice Trainer", "email": "alice@example.com", "login_identifier": "alice_trainer", "password_hash": "hashed_password", "auth_type": "local", "role_id": "trainer", "dietary_preference": "vegetarian"}'
+```
 # KitchenMind - FastAPI + PostgreSQL Integration
 
 Complete integration of KitchenMind recipe synthesis system with FastAPI REST API and PostgreSQL database.

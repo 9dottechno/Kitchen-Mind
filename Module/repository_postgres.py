@@ -9,6 +9,14 @@ from Module.models import Recipe as RecipeModel, Ingredient
 
 
 class PostgresRecipeRepository:
+    def list(self) -> list:
+        """Return all recipes in the database as RecipeModel objects."""
+        db_recipes = self.db.query(self.model).all()
+        print(f"[DEBUG] list() found {len(db_recipes)} recipes in DB")
+        models = [self._to_model(r) for r in db_recipes]
+        print(f"[DEBUG] list() returning models: {[m.id for m in models]}")
+        return models
+
     def add_rating(self, recipe_id: str, user_id: str, rating: float):
         """Add or update a user's rating for a recipe in the Feedback table."""
         from Module.database import Feedback
@@ -104,6 +112,7 @@ class PostgresRecipeRepository:
 
     def __init__(self, db: Session):
         self.db = db
+        self.model = DBRecipe  # Set self.model to the Recipe SQLAlchemy model
     
     def add(self, recipe: RecipeModel):
         """Add a new recipe to the database."""
@@ -142,10 +151,15 @@ class PostgresRecipeRepository:
     
     def get(self, recipe_id: str) -> Optional[RecipeModel]:
         """Get a recipe by ID."""
+        print(f"[DEBUG] get() called with recipe_id: {recipe_id}")
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        print(f"[DEBUG] get() db_recipe: {db_recipe}")
         if not db_recipe:
+            print(f"[DEBUG] get() did not find recipe with id: {recipe_id}")
             return None
-        return self._to_model(db_recipe)
+        model = self._to_model(db_recipe)
+        print(f"[DEBUG] get() returning model: {model}")
+        return model
     
     def find_by_title(self, title: str) -> List[RecipeModel]:
         """Find recipes by title (case-insensitive)."""

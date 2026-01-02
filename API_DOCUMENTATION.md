@@ -92,40 +92,56 @@ Detailed health check
 
 ### User Management
 
-#### POST `/users`
+
+#### POST `/user`
 Create a new user
 ```json
 {
-  "username": "alice_trainer",
-  "role": "trainer"
+  "name": "Alice Trainer",
+  "email": "alice@example.com",
+  "login_identifier": "alice_trainer",
+  "password_hash": "hashed_password",
+  "auth_type": "local",
+  "role_id": "trainer",
+  "dietary_preference": "vegetarian"
 }
 ```
-
-Roles: `user`, `trainer`, `validator`, `admin`
 
 Response:
 ```json
 {
-  "id": "uuid-string",
-  "username": "alice_trainer",
-  "role": "trainer",
-  "rmdt_balance": 0.0
+  "user_id": "uuid-string",
+  "name": "Alice Trainer",
+  "email": "alice@example.com",
+  "login_identifier": "alice_trainer",
+  "role_id": "trainer",
+  "dietary_preference": "vegetarian",
+  "rating_score": 0.0,
+  "total_points": 0,
+  "created_at": "2026-01-02T12:00:00Z",
+  "last_login_at": "2026-01-02T12:00:00Z"
 }
 ```
 
-#### GET `/users/{user_id}`
+#### GET `/user/{user_id}`
 Get user details
 ```
-GET /users/uuid-string
+GET /user/uuid-string
 ```
 
 Response:
 ```json
 {
-  "id": "uuid-string",
-  "username": "alice_trainer",
-  "role": "trainer",
-  "rmdt_balance": 1.5
+  "user_id": "uuid-string",
+  "name": "Alice Trainer",
+  "email": "alice@example.com",
+  "login_identifier": "alice_trainer",
+  "role_id": "trainer",
+  "dietary_preference": "vegetarian",
+  "rating_score": 1.5,
+  "total_points": 10,
+  "created_at": "2026-01-02T12:00:00Z",
+  "last_login_at": "2026-01-02T12:00:00Z"
 }
 ```
 
@@ -321,7 +337,8 @@ Response:
 
 ### Event Planning
 
-#### POST `/events/plan`
+
+#### POST `/event/plan`
 Plan an event with recipes
 
 Request:
@@ -414,11 +431,12 @@ Example error response:
 
 ## Usage Examples
 
+
 ### Create User
 ```bash
-curl -X POST "http://localhost:8000/users" \
+curl -X POST "http://localhost:8000/user" \
   -H "Content-Type: application/json" \
-  -d '{"username": "alice", "role": "trainer"}'
+  -d '{"name": "Alice Trainer", "email": "alice@example.com", "login_identifier": "alice_trainer", "password_hash": "hashed_password", "auth_type": "local", "role_id": "trainer", "dietary_preference": "vegetarian"}'
 ```
 
 ### Submit Recipe

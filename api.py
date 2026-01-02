@@ -3,6 +3,9 @@ FastAPI application for KitchenMind recipe synthesis system.
 Provides REST API for recipe management, synthesis, and event planning.
 """
 from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
+import os
+from Module.ai_validation import ai_validate_recipe
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -404,174 +407,22 @@ def list_recipes(
     approved_only: bool = Query(True),
     db: Session = Depends(get_db)
 ):
-    """List recipes from database."""
-    print(f"[DEBUG] list_recipes called with approved_only={approved_only}")
+    """List recipes, optionally filtering by approval status."""
     postgres_repo = PostgresRecipeRepository(db)
-    if approved_only:
-        recipes = postgres_repo.approved()
-        print(f"[DEBUG] Approved recipes: {recipes}")
-    else:
-        # Use new Recipe model for unfiltered listing
-        db_recipes = db.query(Recipe).all() if hasattr(db.query(Recipe), 'all') else []
-        print(f"[DEBUG] db_recipes: {db_recipes}")
-        recipes = [postgres_repo._to_model(r) for r in db_recipes]
-        print(f"[DEBUG] Unfiltered recipes: {recipes}")
+    recipes = postgres_repo.approved() if approved_only else postgres_repo.list()
     response = [
         RecipeResponse(
             id=r.id,
             title=r.title,
             servings=r.servings,
             approved=r.approved,
-            popularity=r.popularity,
-            avg_rating=r.avg_rating()
+            popularity=getattr(r, "popularity", 0),
+            avg_rating=r.avg_rating() if hasattr(r, "avg_rating") else 0.0
         )
         for r in recipes
     ]
     print(f"[DEBUG] list_recipes response: {response}")
     return response
-
-
-@app.get("/recipe/{recipe_id}", response_model=RecipeResponse)
-def get_recipe(recipe_id: str, db: Session = Depends(get_db)):
-    """Get a specific recipe."""
-    postgres_repo = PostgresRecipeRepository(db)
-    recipe = postgres_repo.get(recipe_id)
-    
-    if not recipe:
-        raise HTTPException(status_code=404, detail="Recipe not found")
-    
-    return RecipeResponse(
-        id=recipe.id,
-        title=recipe.title,
-        servings=recipe.servings,
-        approved=recipe.approved,
-        popularity=recipe.popularity,
-        avg_rating=recipe.avg_rating()
-    )
-
-
-# ============================================================================
-# Recipe Validation Endpoints
-# ============================================================================
-
-@app.post("/recipe/{recipe_id}/validate", response_model=RecipeResponse)
-def validate_recipe(
-    recipe_id: str,
-    validation: RecipeValidationRequest,
-    validator_id: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    """Validate a recipe with AI validator (no RMDT for AI).
-    
-    Workflow:
-    - confidence >= 90%: AUTO-APPROVED → Added to database
-    - confidence < 90% and approved=True: MANUALLY APPROVED → Added to database
-    - confidence < 90% and approved=False: REJECTED → AI suggestions sent to trainer
-    
-    NOTE: AI validators do not receive RMDT rewards.
-    """
-    # Fetch validator from the database
-    from Module.database import User as DBUser, Role as DBRole
-    validator = db.query(DBUser).filter(DBUser.user_id == validator_id).first()
-    if not validator:
-        raise HTTPException(status_code=404, detail="Validator not found")
-    # Normalize role
-    role_obj = validator.role
-    if hasattr(role_obj, 'name'):
-        validator_role = role_obj.name.lower()
-    else:
-        validator_role = str(role_obj).lower() if role_obj else None
-    if validator_role not in ["validator", "admin"]:
-        raise HTTPException(status_code=403, detail="Only AI validators (role='validator') can validate recipes")
-    
-    try:
-        # Fetch recipe from DB
-        from Module.database import Recipe as DBRecipe
-        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
-        if not db_recipe:
-            raise HTTPException(status_code=404, detail="Recipe not found")
-
-        # Simulate AI model call (replace with real call)
-        def call_ai_model(recipe, api_key):
-            # Dummy: always return 0.92 accuracy for demo
-            return {"accuracy": 0.92, "reasons": []}
-
-        # Get API key from header (for demo, use a fixed key)
-        import inspect
-        api_key = None
-        for frame in inspect.stack():
-            if 'request' in frame.frame.f_locals:
-                req = frame.frame.f_locals['request']
-                api_key = req.headers.get('x-api-key')
-                break
-
-        ai_result = call_ai_model(db_recipe, api_key)
-        accuracy = ai_result.get("accuracy", 0)
-
-        if accuracy > 0.9:
-            db_recipe.is_published = True
-            approved = True
-            rejection_suggestions = []
-        else:
-            db_recipe.is_published = False
-            approved = False
-            rejection_suggestions = ai_result.get("reasons", ["Accuracy below threshold"])
-
-        db.commit()
-        db.refresh(db_recipe)
-
-        # Update model for response
-        postgres_repo = PostgresRecipeRepository(db)
-        validated_recipe = postgres_repo._to_model(db_recipe)
-        validated_recipe.approved = approved
-        validated_recipe.validator_confidence = accuracy
-        validated_recipe.rejection_suggestions = rejection_suggestions
-
-        response = RecipeResponse(
-            id=recipe_id,
-            title=validated_recipe.title,
-            servings=getattr(validated_recipe, "servings", 1),
-            approved=validated_recipe.approved,
-            popularity=getattr(validated_recipe, "popularity", 0),
-            avg_rating=validated_recipe.avg_rating() if hasattr(validated_recipe, "avg_rating") else 0.0
-        )
-        print(f"[DEBUG] validate_recipe response: {response}")
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/recipe/{recipe_id}/rate", response_model=RecipeResponse)
-def rate_recipe(
-    recipe_id: str,
-    rating: float = Query(..., ge=0, le=5),
-    db: Session = Depends(get_db)
-):
-    """Validate a recipe. Only admins can perform human validation. AI validation is handled internally."""
-    # If you want to allow only admins to validate, fetch user and check role == 'admin'.
-    # For AI validation, skip user check and run AI logic directly.
-    try:
-        # Fetch recipe from DB
-        postgres_repo = PostgresRecipeRepository(db)
-        recipe_model = postgres_repo.get(recipe_id)
-        if not recipe_model:
-            print("[ERROR] Recipe not found")
-            raise HTTPException(status_code=404, detail="Recipe not found")
-        # Update rating (this logic may need to be adapted to your model)
-        avg_rating = recipe_model.rate(rating) if hasattr(recipe_model, "rate") else rating
-        response = RecipeResponse(
-            id=recipe_id,
-            title=recipe_model.title,
-            servings=getattr(recipe_model, "servings", 1),
-            approved=recipe_model.approved,
-            popularity=getattr(recipe_model, "popularity", 0),
-            avg_rating=avg_rating
-        )
-        print(f"[DEBUG] rate_recipe response: {response}")
-        return response
-    except KeyError:
-        print("[ERROR] Recipe not found")
-        raise HTTPException(status_code=404, detail="Recipe not found")
 
 
 # ============================================================================
@@ -677,10 +528,18 @@ def get_pending_recipes(db: Session = Depends(get_db)):
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Handle general exceptions."""
-    return {
-        "error": "Internal server error",
-        "detail": str(exc)
-    }
+    print("[API ERROR] Exception occurred:")
+    print(f"Request: {request.method} {request.url}")
+    print(f"Exception: {exc!r}")
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": str(exc)
+        }
+    )
 
 
 # ============================================================================

@@ -76,7 +76,6 @@ class KitchenMind:
         r.metadata['validated_by'] = admin.username
         r.metadata['validated_by_id'] = admin.id
         r.metadata['confidence_score'] = r.validator_confidence
-        r.metadata['validator_type'] = 'admin'
         # Auto-approve if confidence >= 0.9
         if r.validator_confidence >= 0.9:
             r.approved = True

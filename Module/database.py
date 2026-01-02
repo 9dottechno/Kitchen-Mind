@@ -138,11 +138,9 @@ class Validation(Base):
     __tablename__ = "validations"
     validation_id = Column(String, primary_key=True)
     version_id = Column(String, ForeignKey("recipe_versions.version_id"))
-    validator_type = Column(String)
     validated_at = Column(DateTime)
     approved = Column(Boolean)
     feedback = Column(Text)
-    points_awarded = Column(Integer)
     version = relationship("RecipeVersion", back_populates="validations")
 
 class Feedback(Base):

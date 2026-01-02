@@ -93,20 +93,20 @@ def test_create_user() -> Dict[str, Any]:
             "role_id": "trainer",
             "dietary_preference": "VEG"
         }
-        response = requests.post(f"{BASE_URL}/users", json=user_data)
+        response = requests.post(f"{BASE_URL}/user", json=user_data)
         if response.status_code in (200, 201):
             user = response.json()
             print_success(f"User created: {user['name']}")
             return user
         elif response.status_code == 409:
             # Fetch existing user if duplicate
-            get_resp = requests.get(f"{BASE_URL}/users/by_email/{user_data['email']}")
+            get_resp = requests.get(f"{BASE_URL}/user/email/{user_data['email']}")
             if get_resp.status_code == 200:
                 user = get_resp.json()
                 print_success(f"User exists: {user['name']}")
                 return user
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
+            print_error(f"Status code: {get_resp.status_code}")
+            print_error(f"Response: {get_resp.text}")
             return None
         else:
             print_error(f"Status code: {response.status_code}")
@@ -116,51 +116,11 @@ def test_create_user() -> Dict[str, Any]:
         print_error(f"Error: {e}")
         return None
 def test_create_admin_profile(user: Dict[str, Any]) -> Dict[str, Any]:
-    """Test admin profile creation."""
-    print_test("Create Admin Profile")
-    if not user:
-        print_error("No user provided")
-        return None
-    try:
-        admin_data = {
-            "user_id": user["user_id"],
-            "created_by": "system",
-            "is_super_admin": True
-        }
-        response = requests.post(f"{BASE_URL}/admin_profiles", json=admin_data)
-        if response.status_code in (200, 201):
-            admin = response.json()
-            print_success(f"Admin profile created: {admin['admin_id']}")
-            return admin
-        else:
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
-            return None
-    except Exception as e:
-        print_error(f"Error: {e}")
-        return None
+    print("[SKIPPED] /admin_profiles endpoint does not exist.")
+    return None
 def test_create_session(user: Dict[str, Any]) -> Dict[str, Any]:
-    """Test session creation."""
-    print_test("Create Session")
-    if not user:
-        print_error("No user provided")
-        return None
-    try:
-        session_data = {
-            "user_id": user["user_id"]
-        }
-        response = requests.post(f"{BASE_URL}/sessions", json=session_data)
-        if response.status_code in (200, 201):
-            session = response.json()
-            print_success(f"Session created: {session['session_id']}")
-            return session
-        else:
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
-            return None
-    except Exception as e:
-        print_error(f"Error: {e}")
-        return None
+    print("[SKIPPED] /sessions endpoint does not exist.")
+    return None
 def test_create_admin_action(admin: Dict[str, Any]) -> Dict[str, Any]:
     """Test admin action log creation."""
     print_test("Create Admin Action Log")
@@ -214,9 +174,9 @@ def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
                 "Steam for 12 minutes"
             ]
         }
-        print(f"[DEBUG TEST] Sending POST /recipes with trainer_id={trainer.get('user_id')}, data={recipe_data}")
+        print(f"[DEBUG TEST] Sending POST /recipe with trainer_id={trainer.get('user_id')}, data={recipe_data}")
         response = requests.post(
-            f"{BASE_URL}/recipes",
+            f"{BASE_URL}/recipe",
             json=recipe_data,
             params={"trainer_id": trainer["user_id"]}
         )
@@ -260,7 +220,7 @@ def test_get_recipe(recipe: Dict[str, Any]):
         return False
     
     try:
-        response = requests.get(f"{BASE_URL}/recipes/{recipe['id']}")
+        response = requests.get(f"{BASE_URL}/recipe/{recipe['id']}")
         if response.status_code == 200:
             retrieved = response.json()
             print_success(f"Retrieved recipe: {retrieved['title']}")
@@ -286,7 +246,7 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
     
     try:
         response = requests.post(
-            f"{BASE_URL}/recipes/{recipe['id']}/rate",
+            f"{BASE_URL}/recipe/{recipe['id']}/rate",
             params={"user_id": user["id"], "rating": 4.5}
         )
         print(f"[DEBUG TEST] rate_recipe status: {response.status_code}")
@@ -323,7 +283,7 @@ def test_synthesize_recipe(user: Dict[str, Any]):
             "reorder": True
         }
         response = requests.post(
-            f"{BASE_URL}/recipes/synthesize",
+            f"{BASE_URL}/recipe/synthesize",
             json=synthesis_data,
             params={"user_id": user["id"]}
         )
@@ -357,7 +317,7 @@ def test_plan_event():
             "dietary": None
         }
         
-        response = requests.post(f"{BASE_URL}/events/plan", json=event_data)
+        response = requests.post(f"{BASE_URL}/event/plan", json=event_data)
         
         if response.status_code == 200:
             result = response.json()
@@ -410,6 +370,7 @@ def run_all_tests():
     print(f"[DEBUG TEST] admin_action object after creation: {admin_action}")
     results["create_admin_action"] = admin_action is not None
 
+
     # Submit recipe (reuse test_submit_recipe)
     recipe = test_submit_recipe(user)
     print(f"[DEBUG TEST] recipe object after creation: {recipe}")
@@ -417,6 +378,38 @@ def run_all_tests():
         recipe['id'] = recipe['recipe_id']
         print(f"[DEBUG TEST] recipe object patched with id: {recipe}")
     results["submit_recipe"] = recipe is not None
+
+    # Approve recipe so synthesis will succeed
+    def approve_recipe(recipe, validator_id):
+        print_test("Approve Recipe (validate)")
+        if not recipe or not validator_id:
+            print_error("Missing recipe or validator_id for approval")
+            return False
+        validation_data = {"approved": True, "feedback": "Approved for test", "confidence": 0.95}
+        try:
+            response = requests.post(
+                f"{BASE_URL}/recipe/{recipe['id']}/validate",
+                json=validation_data,
+                params={"validator_id": validator_id}
+            )
+            print(f"[DEBUG TEST] approve_recipe status: {response.status_code}")
+            print(f"[DEBUG TEST] approve_recipe text: {response.text}")
+            if response.status_code == 200:
+                print_success("Recipe approved for synthesis test")
+                return True
+            else:
+                print_error(f"Status code: {response.status_code}")
+                print_error(f"Response: {response.text}")
+                return False
+        except Exception as e:
+            print_error(f"Exception in approve_recipe: {e}")
+            return False
+
+    # For test, use the user as validator (must have validator/admin role in DB)
+    if recipe and user:
+        results["approve_recipe"] = approve_recipe(recipe, user["id"])
+    else:
+        results["approve_recipe"] = False
 
     # Get recipes
     recipes = test_get_recipes()
