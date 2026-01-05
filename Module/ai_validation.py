@@ -7,23 +7,27 @@ def ai_validate_recipe(recipe_title, ingredients, steps, api_key=None):
     """
     Use OpenAI GPT to validate a recipe. Returns (approved: bool, feedback: str, confidence: float)
     """
-    if api_key is None:
-        api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("OpenAI API key not set in environment or provided.")
+        raise ValueError("OpenAI API key not set in environment.")
     openai.api_key = api_key
 
     prompt = f"""
-You are a professional chef and food safety expert. Review the following recipe for completeness, clarity, and safety. 
+You are a professional chef and food safety expert. Review the following recipe for completeness, clarity, and safety.
 If the recipe is clear, complete, and safe, approve it. Otherwise, reject and provide feedback.
 
 Recipe Title: {recipe_title}
 Ingredients: {ingredients}
 Steps: {steps}
 
-Respond in JSON with keys: approved (true/false), feedback (string), confidence (0.0-1.0).
+Respond ONLY in JSON with these keys:
+    - approved (true/false): Is the recipe approved?
+    - confidence (float, 0.0-1.0): Your confidence in the approval decision.
+    - feedback (string): Feedback for the trainer.
+Example:
+{{"approved": true, "confidence": 0.92, "feedback": "Recipe is clear and safe."}}
 """
-    response = openai.ChatCompletion.create(
+    response = openai.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "system", "content": "You are a recipe validation assistant."},
                   {"role": "user", "content": prompt}],
@@ -32,15 +36,17 @@ Respond in JSON with keys: approved (true/false), feedback (string), confidence 
     )
     import json
     try:
-        content = response["choices"][0]["message"]["content"]
+        content = response.choices[0].message.content
         result = json.loads(content)
-        accuracy = float(result.get("accuracy", 0.0))
+        # Use 'confidence' field, fallback to 0.0 if missing
+        confidence = float(result.get("confidence", 0.0))
         feedback = str(result.get("feedback", "No feedback provided."))
-        approved = accuracy > 0.9
+        # Use 'approved' field directly if present, else fallback to confidence > 0.9
+        approved = bool(result.get("approved", confidence > 0.9))
         if approved:
-            feedback = feedback + "\nRecipe approved: accuracy greater than 90%."
+            feedback = feedback + "\nRecipe approved: confidence greater than 90%."
         else:
-            feedback = feedback + "\nRecipe rejected: accuracy 90% or less. Please address the feedback above."
-        return approved, feedback, accuracy
+            feedback = feedback + "\nRecipe rejected: confidence 90% or less. Please address the feedback above."
+        return approved, feedback, confidence
     except Exception as e:
         return False, f"AI validation failed: {e}", 0.0

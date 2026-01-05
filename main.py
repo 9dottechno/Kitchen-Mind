@@ -7,6 +7,9 @@ Run:
     python main.py
 """
 
+
+from dotenv import load_dotenv
+load_dotenv()
 import pprint
 from Module.controller import KitchenMind
 from dataclasses import asdict
@@ -16,7 +19,7 @@ def example_run():
     km = KitchenMind()
     # create users
     t = km.create_user('alice_trainer', role='trainer')
-    v = km.create_user('bob_validator', role='validator')
+    v = km.create_user('bob_validator', role='admin')
     u = km.create_user('charlie_user', role='user')
 
     # trainer submits two versions of a dish
@@ -364,9 +367,20 @@ def example_run():
 
 
         # ---------- VALIDATE ALL RECIPES ----------
+    # --- AI-based approval using OpenAI API key ---
+    from Module.ai_validation import ai_validate_recipe
+    print("\n--- AI Validation Demo ---")
     for r in km.recipes.recipes.values():
         if r.metadata.get("submitted_by") == "alice_trainer":
-            km.validate_recipe(v, r.id, approved=True, feedback="Auto-approved", confidence=0.85)
+            approved, feedback, confidence = ai_validate_recipe(
+                r.title,
+                r.ingredients,
+                r.steps
+            )
+            print(f"AI validation for '{r.title}': approved={approved}, confidence={confidence:.2f}")
+            print(f"Feedback: {feedback}")
+            # Optionally, update recipe approval status based on AI result
+            km.validate_recipe(v, r.id, approved=approved, feedback=feedback, confidence=confidence)
 
     # ---------- Request Synthesis ----------
     try:

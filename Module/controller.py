@@ -56,9 +56,32 @@ class KitchenMind:
             servings=servings,
             metadata={'submitted_by': trainer.username, 'submitted_by_id': trainer.id}
         )
+        print(f"[DEBUG] submit_recipe: created recipe with id={recipe.id}, approved={getattr(recipe, 'approved', None)}")
         self.recipes.add(recipe)
         self.vstore.index(recipe)
         self.tokens.reward_trainer_submission(trainer, amount=1.0)
+
+        # --- Auto-validate using AI ---
+        try:
+            from Module.ai_validation import ai_validate_recipe
+            approved, feedback, confidence = ai_validate_recipe(
+                recipe.title,
+                recipe.ingredients,
+                recipe.steps
+            )
+            print(f"[DEBUG] AI validation: approved={approved}, confidence={confidence}, feedback={feedback}")
+            # Use admin role for auto-validation
+            admin_candidates = [u for u in self.users.values() if u.role == 'admin']
+            if admin_candidates:
+                admin = admin_candidates[0]
+                self.validate_recipe(admin, recipe.id, approved=approved, feedback=feedback, confidence=confidence)
+            else:
+                # Fallback: set approval/confidence directly
+                recipe.approved = approved
+                recipe.validator_confidence = confidence
+                recipe.metadata['validation_feedback'] = feedback
+        except Exception as e:
+            print(f"[ERROR] AI auto-validation failed: {e}")
         return recipe
 
     def validate_recipe(self, admin: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
@@ -84,6 +107,7 @@ class KitchenMind:
             r.metadata['validation_feedback'] = feedback or 'Auto-approved with high confidence (≥90%)'
             r.metadata['auto_approved'] = True
             print(f"✓ Recipe '{r.title}' AUTO-APPROVED (confidence: {r.validator_confidence:.1%})")
+            print(f"[DEBUG] validate_recipe: recipe id={r.id}, approved={r.approved}")
         elif approved:
             # Manual approval (confidence < 90%)
             r.approved = True
@@ -92,11 +116,13 @@ class KitchenMind:
             r.metadata['validation_feedback'] = feedback or 'Manually approved'
             r.metadata['auto_approved'] = False
             print(f"✓ Recipe '{r.title}' MANUALLY APPROVED (confidence: {r.validator_confidence:.1%})")
+            print(f"[DEBUG] validate_recipe: recipe id={r.id}, approved={r.approved}")
         else:
             # Rejected - generate AI suggestions for trainer
             r.approved = False
             r.metadata['validation_feedback'] = feedback
             r.metadata['auto_approved'] = False
+            print(f"[DEBUG] validate_recipe: recipe id={r.id}, approved={r.approved}")
             r.rejection_suggestions = self._generate_ai_suggestions(r, feedback, confidence)
             r.metadata['rejected'] = True
             r.metadata['rejection_reason'] = feedback or "Does not meet quality standards"
@@ -175,49 +201,68 @@ class KitchenMind:
         
         return suggestions
 
-    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True) -> Recipe:
+    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True, db=None) -> Recipe:
         """Request a synthesized recipe for a specific dish and serving size."""
         if not user:
             raise ValueError("User cannot be None")
-        
+        print(f"[DEBUG] request_recipe: user={user}, type={type(user)}")
+        print(f"[DEBUG] user attributes: {dir(user)}")
         if servings <= 0:
             raise ValueError("Servings must be positive")
-        
-        # Try direct title match first (preferred)
-        direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
-        candidates = []
-        
-        if direct:
+
+        print(f"[DEBUG] request_recipe: dish_name='{dish_name}', servings={servings}, top_k={top_k}, reorder={reorder}")
+        # Always use DB-backed search if db is provided
+        try:
+            from Module.repository_postgres import PostgresRecipeRepository
+            if db:
+                print(f"[DEBUG] Using provided db session for recipe search: {db}")
+                repo = PostgresRecipeRepository(db)
+                approved_recipes = repo.approved()
+                print(f"[DEBUG] repo.approved() returned {len(approved_recipes)} recipes")
+                for r in approved_recipes:
+                    print(f"[DEBUG] approved recipe: id={r.id}, title='{r.title}', approved={r.approved}")
+                direct = [r for r in approved_recipes if dish_name.lower() in r.title.lower()]
+                print(f"[DEBUG] direct match count: {len(direct)}")
+                for r in direct:
+                    print(f"[DEBUG] direct match: id={r.id}, title='{r.title}'")
+                candidates = direct
+                if not candidates:
+                    print("[DEBUG] No direct matches found, fallback to semantic search (not implemented)")
+                    candidates = []
+            else:
+                print("[DEBUG] No db provided, fallback to in-memory")
+                direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
+                print(f"[DEBUG] in-memory direct match count: {len(direct)}")
+                candidates = direct
+        except Exception as e:
+            print(f"[DEBUG] Exception in request_recipe DB search: {e}")
+            print("[DEBUG] Fallback to in-memory")
+            direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
+            print(f"[DEBUG] in-memory direct match count: {len(direct)}")
             candidates = direct
-        else:
-            # Fallback to semantic search
-            search_text = f"{dish_name} for {servings} servings"
-            results = self.vstore.query(search_text, top_k=top_k)
-            candidate_ids = [rid for rid, _ in results]
-            candidates = [
-                self.recipes.get(rid) 
-                for rid in candidate_ids 
-                if self.recipes.get(rid) and self.recipes.get(rid).approved
-            ]
 
         if not candidates:
+            print(f"[ERROR] No approved recipes found for '{dish_name}'")
             raise LookupError(f'No approved recipes found for "{dish_name}"')
 
-        # Prefer recipes with dish name in title
-        named = [r for r in candidates if dish_name.lower() in r.title.lower()]
-        if named:
-            candidates = named
+        print(f"[DEBUG] candidates count: {len(candidates)}")
+        for r in candidates:
+            print(f"[DEBUG] candidate: id={r.id}, title='{r.title}'")
 
         # Score and synthesize
         scored = [(r, self.scorer.score(r)) for r in candidates]
+        print(f"[DEBUG] scored candidates: {[(r.id, score) for r, score in scored]}")
         scored.sort(key=lambda x: x[1], reverse=True)
         top_n = [r for r, _ in scored[:2]]
-        
+        print(f"[DEBUG] top_n: {[r.id for r in top_n]}")
+
         synthesized = self.synth.synthesize(top_n, servings, reorder=reorder)
+        print(f"[DEBUG] synthesized recipe: id={synthesized.id}, title='{synthesized.title}'")
         self.recipes.add(synthesized)
         self.vstore.index(synthesized)
-        
+
         # Reward user
+        print(f"[DEBUG] About to reward user: user={user}, id={getattr(user, 'id', None)}")
         self.tokens.reward_user_request(user, amount=0.25)
         return synthesized
 

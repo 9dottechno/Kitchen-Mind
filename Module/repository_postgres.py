@@ -4,11 +4,32 @@ PostgreSQL-based repository implementation for KitchenMind.
 from typing import List, Optional
 from sqlalchemy.orm import Session
 import uuid
-from .database import Recipe as DBRecipe, Ingredient as DBIngredient, Step as DBStep
+from database.models.recipe_model import Recipe as DBRecipe
+from database.models.ingredient_model import Ingredient as DBIngredient
+from database.models.step_model import Step as DBStep
 from Module.models import Recipe as RecipeModel, Ingredient
 
 
 class PostgresRecipeRepository:
+    def update_recipe_validation(self, recipe_id: str, approved: bool, validator_confidence: float, validation_feedback: str):
+        """Update recipe approval, confidence, and feedback after AI validation."""
+        from database.models.recipe_version_model import RecipeVersion
+        db_recipe = self.db.query(self.model).filter(self.model.recipe_id == recipe_id).first()
+        if not db_recipe:
+            raise ValueError(f"Recipe {recipe_id} not found")
+        db_recipe.is_published = approved
+        # Update current version's validator_confidence and feedback
+        current_version = None
+        if db_recipe.current_version_id:
+            current_version = self.db.query(RecipeVersion).filter(RecipeVersion.version_id == db_recipe.current_version_id).first()
+        if current_version:
+            current_version.validator_confidence = validator_confidence
+            current_version.validation_feedback = validation_feedback
+        self.db.commit()
+        self.db.refresh(db_recipe)
+        # Return updated RecipeModel
+        return self._to_model(db_recipe)
+
     def list(self) -> list:
         """Return all recipes in the database as RecipeModel objects."""
         db_recipes = self.db.query(self.model).all()
@@ -19,7 +40,7 @@ class PostgresRecipeRepository:
 
     def add_rating(self, recipe_id: str, user_id: str, rating: float):
         """Add or update a user's rating for a recipe in the Feedback table."""
-        from Module.database import Feedback
+        from database.models.feedback_model import Feedback
         from datetime import datetime
         feedback = self.db.query(Feedback).filter(Feedback.recipe_id == recipe_id, Feedback.user_id == user_id).first()
         if feedback:
@@ -41,13 +62,14 @@ class PostgresRecipeRepository:
 
     def get_ratings(self, recipe_id: str):
         """Get all ratings for a recipe from the Feedback table."""
-        from Module.database import Feedback
+        from database.models.feedback_model import Feedback
         feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == recipe_id).all()
         return [fb.rating for fb in feedbacks if fb.rating is not None]
 
     def create_recipe(self, title, ingredients, steps, servings, submitted_by=None):
         """Create and persist a new recipe, returning the Recipe model with id."""
         print(f"[DEBUG] create_recipe called with title={title}, servings={servings}, submitted_by={submitted_by}")
+        print(f"[DEBUG] (create_recipe) is_published will be set to False (not approved)")
         import datetime
         recipe_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
@@ -75,7 +97,9 @@ class PostgresRecipeRepository:
         return model
 
     def _create_version(self, version_id, recipe_id, submitted_by, servings, ingredients, steps):
-        from .database import RecipeVersion, Ingredient as DBIngredient, Step as DBStep
+        from database.models.recipe_version_model import RecipeVersion
+        from database.models.ingredient_model import Ingredient as DBIngredient
+        from database.models.step_model import Step as DBStep
         import datetime
         db_version = RecipeVersion(
             version_id=version_id,
@@ -154,11 +178,14 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] get() called with recipe_id: {recipe_id}")
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
         print(f"[DEBUG] get() db_recipe: {db_recipe}")
-        if not db_recipe:
+        if db_recipe:
+            print(f"[DEBUG] get() db_recipe.is_published: {getattr(db_recipe, 'is_published', None)}")
+        else:
             print(f"[DEBUG] get() did not find recipe with id: {recipe_id}")
             return None
         model = self._to_model(db_recipe)
         print(f"[DEBUG] get() returning model: {model}")
+        print(f"[DEBUG] get() model.approved: {getattr(model, 'approved', None)}")
         return model
     
     def find_by_title(self, title: str) -> List[RecipeModel]:
@@ -187,9 +214,10 @@ class PostgresRecipeRepository:
         db_recipe.dish_name = recipe.title
         db_recipe.servings = recipe.servings
         db_recipe.is_published = recipe.approved
+        print(f"[DEBUG] update() recipe.approved: {recipe.approved}, db_recipe.is_published: {db_recipe.is_published}")
 
         # Persist ratings using Feedback table
-        from Module.database import Feedback
+        from database.models.feedback_model import Feedback
         # Only update if ratings are present in the RecipeModel
         if hasattr(recipe, 'ratings') and recipe.ratings:
             for rating_obj in recipe.ratings:
@@ -217,7 +245,7 @@ class PostgresRecipeRepository:
         else:
             avg_rating = 0.0
         # If RecipeVersion exists, update avg_rating
-        from Module.database import RecipeVersion
+        from database.models.recipe_version_model import RecipeVersion
         version = self.db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe.id).first()
         if version:
             version.avg_rating = avg_rating

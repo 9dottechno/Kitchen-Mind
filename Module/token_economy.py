@@ -15,7 +15,8 @@ class TokenEconomy:
 
     def reward_trainer_submission(self, trainer: User, amount: float = 1.0):
         """Reward a trainer for submitting a recipe"""
-        trainer.credit(amount)
+        # PATCH: Increment total_points instead of credit()
+        trainer.total_points = (trainer.total_points or 0) + amount
         self.ledger.setdefault(trainer.id, 0.0)
         self.ledger[trainer.id] += amount
 
@@ -30,7 +31,8 @@ class TokenEconomy:
             return
         
         # Only reward if not a validator (should not occur normally)
-        validator.credit(amount)
+        # PATCH: Increment total_points instead of credit()
+        validator.total_points = (validator.total_points or 0) + amount
         self.ledger.setdefault(validator.id, 0.0)
         self.ledger[validator.id] += amount
 
@@ -46,7 +48,8 @@ class TokenEconomy:
         if amount <= 0:
             raise ValueError("Reward amount must be positive")
         
-        user.credit(amount)
+        # PATCH: Increment total_points instead of credit()
+        user.total_points = (user.total_points or 0) + amount
         self.ledger.setdefault(user.id, 0.0)
         self.ledger[user.id] += amount
 
@@ -62,6 +65,7 @@ class TokenEconomy:
         if amount <= 0:
             raise ValueError("Reward amount must be positive")
         
-        user.credit(amount)
+        # PATCH: Increment total_points instead of credit()
+        user.total_points = (user.total_points or 0) + amount
         self.ledger.setdefault(user.id, 0.0)
         self.ledger[user.id] += amount

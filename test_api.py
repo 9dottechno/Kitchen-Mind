@@ -392,6 +392,7 @@ def run_all_tests():
                 json=validation_data,
                 params={"validator_id": validator_id}
             )
+            print("base url", f"{BASE_URL}/recipe/{recipe['id']}/validate")
             print(f"[DEBUG TEST] approve_recipe status: {response.status_code}")
             print(f"[DEBUG TEST] approve_recipe text: {response.text}")
             if response.status_code == 200:

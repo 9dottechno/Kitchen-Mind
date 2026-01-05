@@ -68,7 +68,7 @@ def setup_database():
     # Create tables
     print("\n5. Creating tables...")
     try:
-        from Module.database import init_db
+        from database.db import init_db
         init_db()
         print("   ✓ Tables created successfully")
     except Exception as e:

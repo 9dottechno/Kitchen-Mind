@@ -15,24 +15,40 @@ from datetime import datetime
 
 app = FastAPI()
 
-from Module.database import get_db, init_db, Recipe, Role, User
-from Module.database import DietaryPreferenceEnum
+
+
+from database.db import get_db, init_db
+from database.models.role_model import Role 
+from database.models.user_model import User
+from database.models.user_model import DietaryPreferenceEnum
 from Module.repository_postgres import PostgresRecipeRepository
 from Module.controller import KitchenMind
- # ...existing code...
 from Module.vector_store import MockVectorStore
 from Module.scoring import ScoringEngine
-# Admin Profile and Session Endpoints
-# (The following code was incorrectly indented and placed outside any function or class. 
-# If you need to implement admin profile creation, please define it inside an endpoint or function.)
+from schema.recipe_schema import RecipeCreate, RecipeResponse
+from schema.synthesis_schema import RecipeSynthesisRequest
+from schema.ingredient_schema import IngredientCreate
+from schema.session_schema import SessionCreate, SessionResponse
+from schema.role_schema import RoleCreate, RoleResponse
+from schema.user_schema import UserCreate, UserResponse
+from schema.event_schema import EventPlanRequest  # <-- Add this import
+from routers.v1.user_routers import router as user_router
+from routers.v1.event_routers import router as event_router
+from routers.v1.ingredient_routers import router as ingredient_router
+from routers.v1.recipe_routers import router as recipe_router
+from routers.v1.role_routers import router as role_router
+from routers.v1.session_routers import router as session_router
+from routers.v1.synthesis_routers import router as synthesis_router
+from routers.v1.validation_routers import router as validation_router
 
-class SessionCreate(BaseModel):
-    user_id: str
-
-class SessionResponse(BaseModel):
-    session_id: str
-    user_id: str
-    created_at: str
+app.include_router(user_router)
+app.include_router(event_router)
+app.include_router(ingredient_router)
+app.include_router(recipe_router)
+app.include_router(role_router)
+app.include_router(session_router)
+app.include_router(synthesis_router)
+app.include_router(validation_router)
 
 @app.post("/session", response_model=SessionResponse)
 def create_session(session: SessionCreate, db: Session = Depends(get_db)):
@@ -40,7 +56,7 @@ def create_session(session: SessionCreate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == session.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    from Module.database import Session as DBSession
+    from database.db import Session as DBSession
     import uuid
     from datetime import datetime
     now = datetime.utcnow()
@@ -71,72 +87,7 @@ app.add_middleware(
 km_instance = None
 
 
-# ============================================================================
-# Pydantic Models (Request/Response Schemas)
-# ============================================================================
 
-class IngredientCreate(BaseModel):
-    """Schema for creating an ingredient."""
-    name: str
-    quantity: float
-    unit: str
-
-
-class RecipeCreate(BaseModel):
-    """Schema for creating a recipe."""
-    title: str
-    ingredients: List[IngredientCreate]
-    steps: List[str]
-    servings: int
-
-
-class RecipeResponse(BaseModel):
-    """Schema for recipe response."""
-    id: str
-    title: str
-    servings: int
-    approved: bool
-    popularity: int
-    avg_rating: float
-
-
-
-class UserCreate(BaseModel):
-    """Schema for creating a user (new schema)."""
-    name: str
-    email: str
-    login_identifier: str
-    password_hash: str
-    auth_type: str
-    role_id: str
-    dietary_preference: str
-
-
-
-class UserResponse(BaseModel):
-    user_id: str
-    name: str
-    email: str
-    login_identifier: str
-    role_id: str
-    dietary_preference: str
-    rating_score: float
-    total_points: int
-    created_at: str = None
-    last_login_at: str = None
-# ============================================================================
-# Role Management Endpoints
-# ============================================================================
-
-class RoleCreate(BaseModel):
-    role_id: str
-    role_name: str
-    description: str = None
-
-class RoleResponse(BaseModel):
-    role_id: str
-    role_name: str
-    description: str = None
 
 # Fetch a role by role_id
 @app.get("/roles/{role_id}", response_model=RoleResponse)
@@ -193,28 +144,6 @@ def list_roles(db: Session = Depends(get_db)):
     roles = db.query(Role).all()
     return [RoleResponse(role_id=r.role_id, role_name=r.role_name, description=r.description) for r in roles]
 
-
-class RecipeSynthesisRequest(BaseModel):
-    """Schema for recipe synthesis request."""
-    dish_name: str
-    servings: int = 2
-    top_k: int = 10
-    reorder: bool = True
-
-
-class RecipeValidationRequest(BaseModel):
-    """Schema for recipe validation."""
-    approved: bool
-    feedback: Optional[str] = None
-    confidence: float = 0.8
-
-
-class EventPlanRequest(BaseModel):
-    """Schema for event planning request."""
-    event_name: str
-    guest_count: int
-    budget_per_person: float
-    dietary: Optional[str] = None
 
 
 # ============================================================================
@@ -386,14 +315,35 @@ def submit_recipe(
         )
         print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
         print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
+
+        # --- Auto-validate using AI ---
+        try:
+            approved, feedback, confidence = ai_validate_recipe(
+                recipe_obj.title,
+                recipe_obj.ingredients,
+                recipe_obj.steps
+            )
+            print(f"[DEBUG] AI validation: approved={approved}, confidence={confidence}, feedback={feedback}")
+            # Update recipe in DB with validation results
+            updated_recipe = postgres_repo.update_recipe_validation(
+                recipe_id=recipe_obj.id,
+                approved=approved,
+                validator_confidence=confidence,
+                validation_feedback=feedback
+            )
+            print(f"[DEBUG] updated_recipe: {updated_recipe}")
+        except Exception as e:
+            print(f"[ERROR] AI auto-validation failed: {e}")
+            updated_recipe = recipe_obj
+
         # Ensure ingredients and steps are in the expected format
         response = RecipeResponse(
-            id=recipe_obj.id,
-            title=recipe_obj.title,
-            servings=recipe_obj.servings,
-            approved=recipe_obj.approved,
-            popularity=getattr(recipe_obj, 'popularity', 0),
-            avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0
+            id=updated_recipe.id,
+            title=updated_recipe.title,
+            servings=updated_recipe.servings,
+            approved=updated_recipe.approved,
+            popularity=getattr(updated_recipe, 'popularity', 0),
+            avg_rating=updated_recipe.avg_rating() if hasattr(updated_recipe, 'avg_rating') else 0.0
         )
         print(f"[DEBUG] RecipeResponse: {response}")
         return response
@@ -438,7 +388,7 @@ def synthesize_recipe(
     """Synthesize multiple recipes into one."""
     print(f"[DEBUG] synthesize_recipe called with user_id: {user_id}, request: {request}")
     # Fetch user from the database
-    from Module.database import User as DBUser
+    from database.models.user_model import User as DBUser
     user = db.query(DBUser).filter(DBUser.user_id == user_id).first()
     print(f"[DEBUG] user: {user}")
     if not user:
@@ -452,7 +402,8 @@ def synthesize_recipe(
             request.dish_name,
             request.servings,
             request.top_k,
-            request.reorder
+            request.reorder,
+            db=db
         )
         print(f"[DEBUG] Synthesis result: {result}")
         postgres_repo = PostgresRecipeRepository(db)
