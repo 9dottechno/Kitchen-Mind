@@ -5,8 +5,8 @@ A toy semantic index. Use actual embeddings + vector DB in production.
 
 import math
 import random
-from typing import Dict, List, Tuple
-from .models import Recipe
+from typing import Dict, List, Tuple, Any
+## Removed import of Recipe dataclass (now using DB models)
 
 
 class MockVectorStore:
@@ -15,7 +15,7 @@ class MockVectorStore:
         # store mapping id -> "embedding" (here a random vector) and metadata
         self.vectors: Dict[str, List[float]] = {}
 
-    def index(self, recipe: Recipe):
+    def index(self, recipe: Any):
         # naive: create a deterministic pseudo-random vector from recipe title
         r = abs(hash(recipe.title)) % (10**8)
         random.seed(r)

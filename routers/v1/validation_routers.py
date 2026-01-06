@@ -5,5 +5,8 @@ router = APIRouter()
 
 @router.post("/recipe/validate")
 def validate_recipe(request: RecipeValidationRequest):
+    print("[DEBUG] /recipe/validate called with:", request)
     # Implement recipe validation logic here
-    return {"message": "Recipe validated", "request": request}
+    result = {"message": "Recipe validated", "request": request}
+    print("[DEBUG] /recipe/validate result:", result)
+    return result

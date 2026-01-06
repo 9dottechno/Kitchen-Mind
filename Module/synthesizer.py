@@ -9,7 +9,23 @@ import statistics
 from dataclasses import asdict
 from typing import List, Dict, Any, Optional, Tuple
 
-from .models import Ingredient, Recipe
+# Define Ingredient and Recipe as minimal stubs if not imported from elsewhere
+class Ingredient:
+    def __init__(self, name: str, quantity: float, unit: str):
+        self.name = name
+        self.quantity = quantity
+        self.unit = unit
+
+class Recipe:
+    def __init__(self, id: str, title: str, ingredients: List['Ingredient'], steps: List[str], servings: int, metadata: dict = None, validator_confidence: float = 1.0, approved: bool = True):
+        self.id = id
+        self.title = title
+        self.ingredients = ingredients
+        self.steps = steps
+        self.servings = servings
+        self.metadata = metadata or {}
+        self.validator_confidence = validator_confidence
+        self.approved = approved
 
 # Try to import torch early for environment check (optional)
 try:
@@ -1898,8 +1914,36 @@ class Synthesizer:
 
 
     #
+
     def synthesize(self, top_recipes: List[Recipe], requested_servings: int,
                llm_model: str = 'google/flan-t5-base', reorder: bool = True) -> Recipe:
+
+        # --- Ensure all recipes are Recipe objects at the very start ---
+        def dict_to_ingredient(d):
+            return Ingredient(
+                name=d['name'],
+                quantity=d['quantity'],
+                unit=d['unit']
+            )
+
+        def get_recipe_attr(recipe, attr):
+            if isinstance(recipe, dict):
+                return recipe[attr] if attr in recipe else None
+            return getattr(recipe, attr, None)
+
+        def dict_to_recipe(d):
+            return Recipe(
+                id=get_recipe_attr(d, 'id') or '',
+                title=get_recipe_attr(d, 'title') or '',
+                ingredients=[dict_to_ingredient(ing) if isinstance(ing, dict) else ing for ing in get_recipe_attr(d, 'ingredients') or []],
+                steps=get_recipe_attr(d, 'steps') or [],
+                servings=get_recipe_attr(d, 'servings') or 1,
+                metadata=get_recipe_attr(d, 'metadata') or {},
+                validator_confidence=get_recipe_attr(d, 'validator_confidence') or 1.0,
+                approved=get_recipe_attr(d, 'approved') if get_recipe_attr(d, 'approved') is not None else True
+            )
+
+        top_recipes = [dict_to_recipe(r) if isinstance(r, dict) else r for r in top_recipes]
 
         print("\nDEBUG: ===================== synthesize() START =====================")
         print(f"DEBUG: requested_servings = {requested_servings}")
@@ -1925,7 +1969,21 @@ class Synthesizer:
         # ---- Merge ingredients ----
         print("\nDEBUG: calling merge_ingredients()")
         merged_ings = self.merge_ingredients(top_recipes, requested_servings)
-        print("DEBUG: merged_ings =", [asdict(ing) for ing in merged_ings])
+        def ingredient_to_dict(ing):
+            try:
+                from dataclasses import is_dataclass
+                if is_dataclass(ing):
+                    return asdict(ing)
+            except Exception:
+                pass
+            # Try SQLAlchemy or fallback to __dict__
+            if hasattr(ing, '__dict__'):
+                return {k: v for k, v in ing.__dict__.items() if not k.startswith('_')}
+            # Try attribute access for SQLAlchemy model
+            attrs = ['name', 'quantity', 'unit', 'notes']
+            return {attr: getattr(ing, attr, None) for attr in attrs}
+
+        print("DEBUG: merged_ings =", [ingredient_to_dict(ing) for ing in merged_ings])
 
         # ---- Generate prep from ingredients ----
         print("\nDEBUG: calling generate_prep_from_ingredients()")
@@ -2294,11 +2352,42 @@ class Synthesizer:
 
             print(f"DEBUG: fallback ai_conf={ai_conf}, validator_conf={validator_conf}")
 
-            title_base = top_recipes[0].title.split(':')[0].strip()
+
+
+            def dict_to_ingredient(d):
+                return Ingredient(
+                    name=d['name'],
+                    quantity=d['quantity'],
+                    unit=d['unit']
+                )
+
+            def get_recipe_attr(recipe, attr):
+                if isinstance(recipe, dict):
+                    return recipe[attr] if attr in recipe else None
+                return getattr(recipe, attr, None)
+
+            def dict_to_recipe(d):
+                return Recipe(
+                    id=get_recipe_attr(d, 'id') or '',
+                    title=get_recipe_attr(d, 'title') or '',
+                    ingredients=[dict_to_ingredient(ing) if isinstance(ing, dict) else ing for ing in get_recipe_attr(d, 'ingredients') or []],
+                    steps=get_recipe_attr(d, 'steps') or [],
+                    servings=get_recipe_attr(d, 'servings') or 1,
+                    metadata=get_recipe_attr(d, 'metadata') or {},
+                    validator_confidence=get_recipe_attr(d, 'validator_confidence') or 1.0,
+                    approved=get_recipe_attr(d, 'approved') if get_recipe_attr(d, 'approved') is not None else True
+                )
+
+            # Ensure all recipes are Recipe objects
+            top_recipes = [dict_to_recipe(r) if isinstance(r, dict) else r for r in top_recipes]
+
+            # get_recipe_attr already defined above for this scope
+
+            title_base = get_recipe_attr(top_recipes[0], 'title').split(':')[0].strip()
             title = f"Synthesized \u2014 {title_base} (for {requested_servings} servings)"
 
             meta = {
-                "sources": [r.id for r in top_recipes],
+                "sources": [get_recipe_attr(r, 'id') for r in top_recipes],
                 "ai_confidence": ai_conf,
                 "synthesis_method": "fallback:no-llm"
             }
@@ -2984,13 +3073,18 @@ class Synthesizer:
         print(f"DEBUG: final ai_conf={ai_conf}, validator_conf={validator_conf}")
 
         # Prepare title
-        base_title = top_recipes[0].title.split(':')[0].strip()
+        def get_recipe_attr(recipe, attr):
+            if isinstance(recipe, dict):
+                return recipe[attr] if attr in recipe else None
+            return getattr(recipe, attr, None)
+
+        base_title = get_recipe_attr(top_recipes[0], 'title').split(':')[0].strip()
         title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
         print("DEBUG: final recipe title =", title)
 
         # Metadata
         meta = {
-            "sources": [r.id for r in top_recipes],
+            "sources": [get_recipe_attr(r, 'id') for r in top_recipes],
             "ai_confidence": ai_conf,
             "synthesis_method": f"llm:{llm_model}"
         }

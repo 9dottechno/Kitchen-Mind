@@ -57,15 +57,15 @@ def submit_recipe(
             submitted_by=trainer.user_id
         )
         print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
-        print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
+        print(f"[DEBUG] recipe_obj['id']: {recipe_obj['id'] if isinstance(recipe_obj, dict) and 'id' in recipe_obj else 'N/A'}")
         # Ensure ingredients and steps are in the expected format
         response = RecipeResponse(
-            id=recipe_obj.id,
-            title=recipe_obj.title,
-            servings=recipe_obj.servings,
-            approved=recipe_obj.approved,
-            popularity=getattr(recipe_obj, 'popularity', 0),
-            avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0
+            id=recipe_obj['id'],
+            title=recipe_obj['title'],
+            servings=recipe_obj['servings'],
+            approved=recipe_obj.get('approved', False),
+            popularity=recipe_obj.get('popularity', 0),
+            avg_rating=recipe_obj.get('validator_confidence', 0.0)
         )
         print(f"[DEBUG] RecipeResponse: {response}")
         return response

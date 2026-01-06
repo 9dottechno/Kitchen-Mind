@@ -10,8 +10,6 @@ This package provides:
 - Event planning functionality
 """
 
-from .models import Ingredient, Recipe, User
-from .repository import RecipeRepository
 from .vector_store import MockVectorStore
 from .scoring import ScoringEngine
 from .synthesizer import Synthesizer

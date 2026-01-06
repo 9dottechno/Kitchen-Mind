@@ -1,15 +1,9 @@
-# User table mapping
-from sqlalchemy import Column, String, Integer
-from sqlalchemy.ext.declarative import declarative_base
-import enum
-from sqlalchemy import (
-    create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, Enum, ForeignKey
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, backref
-import os
 
-Base = declarative_base()
+# User table mapping
+from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, Text, Enum, ForeignKey
+from sqlalchemy.orm import relationship
+import enum
+from .base import Base
 
 # Enums
 class DietaryPreferenceEnum(enum.Enum):

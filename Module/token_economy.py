@@ -4,7 +4,13 @@ Implements RMDT token rewards for trainers and validators.
 """
 
 from typing import Dict
-from .models import User
+
+# Define a minimal User class for demonstration or import from your models
+class User:
+    def __init__(self, id: str, role: str = '', total_points: float = 0.0):
+        self.id = id
+        self.role = role
+        self.total_points = total_points
 
 
 class TokenEconomy:

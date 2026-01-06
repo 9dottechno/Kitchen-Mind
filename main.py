@@ -12,11 +12,17 @@ from dotenv import load_dotenv
 load_dotenv()
 import pprint
 from Module.controller import KitchenMind
-from dataclasses import asdict
+## Removed dataclasses import for Postgres-only logic
 
 
 def example_run():
-    km = KitchenMind()
+    # You must now pass a db session to KitchenMind for Postgres usage
+    # Example: from database.db import get_db; db = next(get_db()); km = KitchenMind(db)
+    from database.db import get_db
+    db = next(get_db())
+    from Module.repository_postgres import PostgresRecipeRepository
+    repo = PostgresRecipeRepository(db)
+    km = KitchenMind(repo)
     # create users
     t = km.create_user('alice_trainer', role='trainer')
     v = km.create_user('bob_validator', role='admin')

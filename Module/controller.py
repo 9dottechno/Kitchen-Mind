@@ -4,24 +4,55 @@ Orchestrates all components: recipes, users, synthesis, validation, etc.
 """
 
 import uuid
+from utils.recipe_helpers import is_approved
 from typing import Dict, List, Optional
-from .models import User, Recipe, Ingredient
-from .repository import RecipeRepository
+## Removed import of User, Recipe, Ingredient dataclasses (now using DB models)
 from .vector_store import MockVectorStore
 from .scoring import ScoringEngine
 from .synthesizer import Synthesizer
 from .token_economy import TokenEconomy
 from .event_planner import EventPlanner
 
+# Import User, Recipe, Ingredient from your models or define them if not already
+from dataclasses import dataclass, field
+from typing import Any
+
+@dataclass
+class Ingredient:
+    name: str
+    quantity: float
+    unit: str
+
+@dataclass
+class Recipe:
+    id: str
+    title: str
+    ingredients: list
+    steps: list
+    servings: int
+    metadata: dict = field(default_factory=dict)
+    approved: bool = False
+    validator_confidence: float = 0.0
+    popularity: int = 0
+    ratings: list = field(default_factory=list)
+    rejection_suggestions: list = field(default_factory=list)
+
+@dataclass
+class User:
+    id: str
+    username: str
+    role: str
+    total_points: int = 0
+
 
 class KitchenMind:
-    def __init__(self):
-        self.recipes = RecipeRepository()
+    def __init__(self, recipe_repo):
+        self.recipes = recipe_repo
         self.vstore = MockVectorStore()
         self.scorer = ScoringEngine()
         self.synth = Synthesizer()
         self.tokens = TokenEconomy()
-        self.users: Dict[str, User] = {}
+        self.users: Dict[str, 'User'] = {}
 
     def create_user(self, username: str, role: str = 'user') -> User:
         """Create a new user with specified role (user, trainer, admin)."""
@@ -35,19 +66,19 @@ class KitchenMind:
         """Submit a recipe for validation (trainer/admin only)."""
         if trainer.role not in ('trainer', 'admin'):
             raise PermissionError('Only trainers or admins can submit recipes.')
-        
+
         if not title or title.strip() == "":
             raise ValueError("Recipe title cannot be empty")
-        
+
         if not ingredients or len(ingredients) < 2:
             raise ValueError("Recipe must have at least 2 ingredients")
-        
+
         if not steps or len(steps) < 1:
             raise ValueError("Recipe must have at least 1 step")
-        
+
         if servings <= 0:
             raise ValueError("Servings must be a positive number")
-        
+
         recipe = Recipe(
             id=str(uuid.uuid4()),
             title=title,
@@ -57,7 +88,22 @@ class KitchenMind:
             metadata={'submitted_by': trainer.username, 'submitted_by_id': trainer.id}
         )
         print(f"[DEBUG] submit_recipe: created recipe with id={recipe.id}, approved={getattr(recipe, 'approved', None)}")
-        self.recipes.add(recipe)
+
+        # Always convert Recipe dataclass to dict for DB add
+        recipe_to_add = {
+            'id': recipe.id,
+            'title': recipe.title,
+            'ingredients': [ing.__dict__ if hasattr(ing, '__dict__') else ing for ing in recipe.ingredients],
+            'steps': recipe.steps,
+            'servings': recipe.servings,
+            'metadata': recipe.metadata,
+            'approved': recipe.approved,
+            'validator_confidence': recipe.validator_confidence,
+            'popularity': recipe.popularity,
+            'ratings': recipe.ratings,
+            'rejection_suggestions': recipe.rejection_suggestions
+        }
+        self.recipes.add(recipe_to_add)
         self.vstore.index(recipe)
         self.tokens.reward_trainer_submission(trainer, amount=1.0)
 
@@ -219,25 +265,35 @@ class KitchenMind:
                 repo = PostgresRecipeRepository(db)
                 approved_recipes = repo.approved()
                 print(f"[DEBUG] repo.approved() returned {len(approved_recipes)} recipes")
+                def get_recipe_attr(recipe, attr):
+                    print(f"[DEBUG] get_recipe_attr: type={type(recipe)}, attr={attr}, hasattr={hasattr(recipe, attr)}, is_dict={isinstance(recipe, dict)}")
+                    if isinstance(recipe, dict):
+                        print(f"[DEBUG] dict access: recipe[{attr!r}] -> {recipe.get(attr, None)}")
+                        return recipe.get(attr)
+                    val = getattr(recipe, attr, None)
+                    print(f"[DEBUG] attr access: recipe.{attr} -> {val}")
+                    return val
+
                 for r in approved_recipes:
-                    print(f"[DEBUG] approved recipe: id={r.id}, title='{r.title}', approved={r.approved}")
-                direct = [r for r in approved_recipes if dish_name.lower() in r.title.lower()]
+                    print(f"[DEBUG] approved recipe: id={get_recipe_attr(r, 'id')}, title='{get_recipe_attr(r, 'title')}', approved={get_recipe_attr(r, 'approved')}")
+                direct = [r for r in approved_recipes if dish_name.lower() in get_recipe_attr(r, 'title').lower()]
+                print(f"[DEBUG] direct match filter: type={type(r)}, title={get_recipe_attr(r, 'title')}")
                 print(f"[DEBUG] direct match count: {len(direct)}")
                 for r in direct:
-                    print(f"[DEBUG] direct match: id={r.id}, title='{r.title}'")
+                    print(f"[DEBUG] direct match: id={get_recipe_attr(r, 'id')}, title='{get_recipe_attr(r, 'title')}'")
                 candidates = direct
                 if not candidates:
                     print("[DEBUG] No direct matches found, fallback to semantic search (not implemented)")
                     candidates = []
             else:
                 print("[DEBUG] No db provided, fallback to in-memory")
-                direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
+                direct = [r for r in self.recipes.find_by_title(dish_name) if is_approved(r)]
                 print(f"[DEBUG] in-memory direct match count: {len(direct)}")
                 candidates = direct
         except Exception as e:
             print(f"[DEBUG] Exception in request_recipe DB search: {e}")
             print("[DEBUG] Fallback to in-memory")
-            direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
+            direct = [r for r in self.recipes.find_by_title(dish_name) if is_approved(r)]
             print(f"[DEBUG] in-memory direct match count: {len(direct)}")
             candidates = direct
 
@@ -247,17 +303,36 @@ class KitchenMind:
 
         print(f"[DEBUG] candidates count: {len(candidates)}")
         for r in candidates:
-            print(f"[DEBUG] candidate: id={r.id}, title='{r.title}'")
+            print(f"[DEBUG] candidate: id={get_recipe_attr(r, 'id')}, title='{get_recipe_attr(r, 'title')}'")
+
+
+        # Ensure all candidates are Recipe objects (convert dicts if needed)
+        def dict_to_recipe(d):
+            return Recipe(
+                id=d.get('id', ''),
+                title=d.get('title', ''),
+                ingredients=[Ingredient(**ing) if isinstance(ing, dict) else ing for ing in d.get('ingredients', [])],
+                steps=d.get('steps', []),
+                servings=d.get('servings', 1),
+                metadata=d.get('metadata', {}),
+                validator_confidence=d.get('validator_confidence', 1.0),
+                approved=d.get('approved', True)
+            )
+        candidates = [dict_to_recipe(r) if isinstance(r, dict) else r for r in candidates]
 
         # Score and synthesize
         scored = [(r, self.scorer.score(r)) for r in candidates]
-        print(f"[DEBUG] scored candidates: {[(r.id, score) for r, score in scored]}")
+        print(f"[DEBUG] scored candidates types: {[type(r) for r in candidates]}")
+        print(f"[DEBUG] scored candidates: {[(get_recipe_attr(r, 'id'), score) for r, score in scored]}")
+        for r, score in scored:
+            print(f"[DEBUG] scored: id={get_recipe_attr(r, 'id')}, type={type(r)}, score={score}")
         scored.sort(key=lambda x: x[1], reverse=True)
         top_n = [r for r, _ in scored[:2]]
-        print(f"[DEBUG] top_n: {[r.id for r in top_n]}")
-
+        print(f"[DEBUG] top_n types: {[type(r) for r in top_n]}")
+        print(f"[DEBUG] top_n: {[get_recipe_attr(r, 'id') for r in top_n]}")
         synthesized = self.synth.synthesize(top_n, servings, reorder=reorder)
-        print(f"[DEBUG] synthesized recipe: id={synthesized.id}, title='{synthesized.title}'")
+        print(f"[DEBUG] synth.synthesize input: {[type(r) for r in top_n]}, top_n={top_n}")
+        print(f"[DEBUG] synthesized recipe: id={get_recipe_attr(synthesized, 'id')}, title='{get_recipe_attr(synthesized, 'title')}'")
         self.recipes.add(synthesized)
         self.vstore.index(synthesized)
 
@@ -303,10 +378,12 @@ class KitchenMind:
 
     def event_plan(self, event_name: str, guest_count: int, budget_per_person: float, dietary: Optional[str] = None):
         """Plan an event menu."""
+        print(f"[DEBUG] (KitchenMind.event_plan) called with event_name={event_name}, guest_count={guest_count}, budget_per_person={budget_per_person}, dietary={dietary}")
         if guest_count <= 0:
             raise ValueError("Guest count must be positive")
         if budget_per_person <= 0:
             raise ValueError("Budget per person must be positive")
-        
         planner = EventPlanner(self.recipes)
-        return planner.plan_event(event_name, guest_count, budget_per_person, dietary)
+        result = planner.plan_event(event_name, guest_count, budget_per_person, dietary)
+        print(f"[DEBUG] (KitchenMind.event_plan) planner.plan_event returned: {result}")
+        return result

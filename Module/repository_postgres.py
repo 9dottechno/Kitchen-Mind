@@ -2,12 +2,13 @@
 PostgreSQL-based repository implementation for KitchenMind.
 """
 from typing import List, Optional
+from utils.recipe_helpers import is_approved
 from sqlalchemy.orm import Session
 import uuid
 from database.models.recipe_model import Recipe as DBRecipe
 from database.models.ingredient_model import Ingredient as DBIngredient
 from database.models.step_model import Step as DBStep
-from Module.models import Recipe as RecipeModel, Ingredient
+## Removed import of Recipe, Ingredient dataclasses (now using DB models)
 
 
 class PostgresRecipeRepository:
@@ -35,7 +36,7 @@ class PostgresRecipeRepository:
         db_recipes = self.db.query(self.model).all()
         print(f"[DEBUG] list() found {len(db_recipes)} recipes in DB")
         models = [self._to_model(r) for r in db_recipes]
-        print(f"[DEBUG] list() returning models: {[m.id for m in models]}")
+        print(f"[DEBUG] list() returning models: {[getattr(m, 'id', m.get('id', None)) if not isinstance(m, dict) else m['id'] for m in models]}")
         return models
 
     def add_rating(self, recipe_id: str, user_id: str, rating: float):
@@ -138,42 +139,80 @@ class PostgresRecipeRepository:
         self.db = db
         self.model = DBRecipe  # Set self.model to the Recipe SQLAlchemy model
     
-    def add(self, recipe: RecipeModel):
-        """Add a new recipe to the database."""
+    def add(self, recipe):
+        """Add a new recipe to the database, creating a RecipeVersion and attaching ingredients/steps to the version."""
+        import datetime
+        from database.models.recipe_version_model import RecipeVersion
+        from database.models.ingredient_model import Ingredient as DBIngredient
+        from database.models.step_model import Step as DBStep
+
+        recipe_id = getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']
+        version_id = str(uuid.uuid4())
         db_recipe = DBRecipe(
-            recipe_id=recipe.id,
-            dish_name=recipe.title,
-            servings=recipe.servings if recipe.servings is not None else 1,
+            recipe_id=recipe_id,
+            dish_name=getattr(recipe, 'title', recipe.get('title')) if not isinstance(recipe, dict) else recipe['title'],
+            servings=(getattr(recipe, 'servings', recipe.get('servings')) if not isinstance(recipe, dict) else recipe['servings']) if (getattr(recipe, 'servings', recipe.get('servings', None)) if not isinstance(recipe, dict) else recipe.get('servings', None)) is not None else 1,
             created_by=None,  # Set appropriately if available
-            is_published=recipe.approved,
-            created_at=None  # Set appropriately if available
+            is_published=recipe.get('approved', False),
+            created_at=datetime.datetime.utcnow(),
+            current_version_id=version_id
         )
-        # Add ingredients
-        for ing in recipe.ingredients:
+        # Create RecipeVersion
+        db_version = RecipeVersion(
+            version_id=version_id,
+            recipe_id=recipe_id,
+            submitted_by=None,  # Set appropriately if available
+            submitted_at=datetime.datetime.utcnow(),
+            status="submitted",
+            validator_confidence=recipe.get('validator_confidence', 0.0),
+            base_servings=(getattr(recipe, 'servings', recipe.get('servings')) if not isinstance(recipe, dict) else recipe['servings']) if (getattr(recipe, 'servings', recipe.get('servings', None)) if not isinstance(recipe, dict) else recipe.get('servings', None)) is not None else 1,
+            avg_rating=0.0
+        )
+        # Add ingredients to version
+        db_version.ingredients = []
+        ingredients = getattr(recipe, 'ingredients', recipe.get('ingredients')) if not isinstance(recipe, dict) else recipe['ingredients']
+        for ing in ingredients:
+            if isinstance(ing, dict):
+                name = ing.get('name')
+                quantity = ing.get('quantity')
+                unit = ing.get('unit')
+            else:
+                name = getattr(ing, 'name', None)
+                quantity = getattr(ing, 'quantity', None)
+                unit = getattr(ing, 'unit', None)
             db_ing = DBIngredient(
                 ingredient_id=str(uuid.uuid4()),
-                version_id=None,  # Set appropriately if available
-                name=ing.name,
-                quantity=ing.quantity,
-                unit=ing.unit,
+                version_id=version_id,
+                name=name,
+                quantity=quantity,
+                unit=unit,
                 notes=None
             )
-            db_recipe.ingredients.append(db_ing)
-        # Add steps
-        for idx, step_text in enumerate(recipe.steps):
+            db_version.ingredients.append(db_ing)
+        # Add steps to version
+        db_version.steps = []
+        steps = getattr(recipe, 'steps', recipe.get('steps')) if not isinstance(recipe, dict) else recipe['steps']
+        for idx, step in enumerate(steps):
+            if isinstance(step, dict):
+                instruction = step.get('instruction')
+            elif hasattr(step, 'instruction'):
+                instruction = getattr(step, 'instruction')
+            else:
+                instruction = step  # assume str
             db_step = DBStep(
                 step_id=str(uuid.uuid4()),
-                version_id=None,  # Set appropriately if available
+                version_id=version_id,
                 step_order=idx,
-                instruction=step_text,
+                instruction=instruction,
                 minutes=None
             )
-            db_recipe.steps.append(db_step)
+            db_version.steps.append(db_step)
+        db_recipe.versions = [db_version]
         self.db.add(db_recipe)
         self.db.commit()
         self.db.refresh(db_recipe)
     
-    def get(self, recipe_id: str) -> Optional[RecipeModel]:
+    def get(self, recipe_id: str):
         """Get a recipe by ID."""
         print(f"[DEBUG] get() called with recipe_id: {recipe_id}")
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
@@ -188,50 +227,53 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] get() model.approved: {getattr(model, 'approved', None)}")
         return model
     
-    def find_by_title(self, title: str) -> List[RecipeModel]:
+    def find_by_title(self, title: str):
         """Find recipes by title (case-insensitive)."""
         db_recipes = self.db.query(DBRecipe).filter(
             DBRecipe.dish_name.ilike(f"%{title}%")
         ).all()
         return [self._to_model(r) for r in db_recipes]
     
-    def pending(self) -> List[RecipeModel]:
+    def pending(self):
         """Get all pending (unapproved) recipes."""
         db_recipes = self.db.query(DBRecipe).filter(DBRecipe.is_published == False).all()
         return [self._to_model(r) for r in db_recipes]
     
-    def approved(self) -> List[RecipeModel]:
+    def approved(self):
         """Get all approved recipes."""
         db_recipes = self.db.query(DBRecipe).filter(DBRecipe.is_published == True).all()
         return [self._to_model(r) for r in db_recipes]
     
-    def update(self, recipe: RecipeModel):
+    def update(self, recipe):
         """Update an existing recipe."""
-        db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe.id).first()
+        recipe_id = getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']
+        db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
         if not db_recipe:
-            raise ValueError(f"Recipe {recipe.id} not found")
+            raise ValueError(f"Recipe {getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']} not found")
 
-        db_recipe.dish_name = recipe.title
-        db_recipe.servings = recipe.servings
-        db_recipe.is_published = recipe.approved
-        print(f"[DEBUG] update() recipe.approved: {recipe.approved}, db_recipe.is_published: {db_recipe.is_published}")
+        db_recipe.dish_name = getattr(recipe, 'title', recipe.get('title')) if not isinstance(recipe, dict) else recipe['title']
+        db_recipe.servings = getattr(recipe, 'servings', recipe.get('servings')) if not isinstance(recipe, dict) else recipe['servings']
+        db_recipe.is_published = recipe.get('approved', False)
+        approved = getattr(recipe, 'approved', recipe.get('approved', None)) if not isinstance(recipe, dict) else recipe.get('approved', None)
+        print(f"[DEBUG] update() recipe['approved']: {approved}, db_recipe.is_published: {db_recipe.is_published}")
 
         # Persist ratings using Feedback table
         from database.models.feedback_model import Feedback
-        # Only update if ratings are present in the RecipeModel
-        if hasattr(recipe, 'ratings') and recipe.ratings:
-            for rating_obj in recipe.ratings:
-                user_id = getattr(rating_obj, 'user_id', None)
-                rating_value = getattr(rating_obj, 'rating', None)
+        # Only update if ratings are present in the recipe dict
+        ratings = getattr(recipe, 'ratings', recipe.get('ratings')) if not isinstance(recipe, dict) else recipe.get('ratings', None)
+        if ratings:
+            for rating_obj in ratings:
+                user_id = rating_obj.get('user_id', None)
+                rating_value = rating_obj.get('rating', None)
                 if user_id and rating_value is not None:
-                    feedback = self.db.query(Feedback).filter(Feedback.recipe_id == recipe.id, Feedback.user_id == user_id).first()
+                    feedback = self.db.query(Feedback).filter(Feedback.recipe_id == (getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']), Feedback.user_id == user_id).first()
                     if feedback:
                         feedback.rating = rating_value
                     else:
                         from datetime import datetime
                         feedback = Feedback(
                             feedback_id=str(uuid.uuid4()),
-                            recipe_id=recipe.id,
+                            recipe_id=getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id'],
                             user_id=user_id,
                             created_at=datetime.utcnow(),
                             rating=rating_value,
@@ -239,14 +281,14 @@ class PostgresRecipeRepository:
                         )
                         self.db.add(feedback)
         # Recalculate avg_rating
-        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == recipe.id, Feedback.rating != None).all()
+        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == (getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']), Feedback.rating != None).all()
         if feedbacks:
             avg_rating = sum(f.rating for f in feedbacks) / len(feedbacks)
         else:
             avg_rating = 0.0
         # If RecipeVersion exists, update avg_rating
         from database.models.recipe_version_model import RecipeVersion
-        version = self.db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe.id).first()
+        version = self.db.query(RecipeVersion).filter(RecipeVersion.recipe_id == (getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id'])).first()
         if version:
             version.avg_rating = avg_rating
 
@@ -260,7 +302,7 @@ class PostgresRecipeRepository:
             self.db.delete(db_recipe)
             self.db.commit()
     
-    def _to_model(self, db_recipe: DBRecipe) -> RecipeModel:
+    def _to_model(self, db_recipe: DBRecipe):
         """Convert database model to Recipe model."""
         print(f"[DEBUG] _to_model called with db_recipe: {db_recipe}")
         # Find the current version
@@ -275,7 +317,7 @@ class PostgresRecipeRepository:
             current_version = db_recipe.versions[-1]
         if current_version:
             ingredients = [
-                Ingredient(name=ing.name, quantity=ing.quantity, unit=ing.unit)
+                {'name': ing.name, 'quantity': ing.quantity, 'unit': ing.unit}
                 for ing in current_version.ingredients
             ]
             steps = [s.instruction for s in sorted(current_version.steps, key=lambda x: x.step_order)]
@@ -288,17 +330,18 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] _to_model steps: {steps}")
         if servings is None:
             servings = 1
-        model = RecipeModel(
-            id=getattr(db_recipe, 'recipe_id', None),
-            title=db_recipe.dish_name,
-            ingredients=ingredients,
-            steps=steps,
-            servings=servings,
-            metadata={},
-            ratings=[],
-            validator_confidence=0.0,
-            popularity=0,
-            approved=db_recipe.is_published
-        )
-        print(f"[DEBUG] _to_model: db_recipe.recipe_id={getattr(db_recipe, 'recipe_id', None)}, model.id={getattr(model, 'id', None)}, model={model}")
+        # Return a plain dict for API compatibility
+        model = {
+            'id': getattr(db_recipe, 'recipe_id', None),
+            'title': db_recipe.dish_name,
+            'ingredients': ingredients,
+            'steps': steps,
+            'servings': servings,
+            'metadata': {},
+            'ratings': [],
+            'validator_confidence': 0.0,
+            'popularity': 0,
+            'approved': db_recipe.is_published
+        }
+        print(f"[DEBUG] _to_model: db_recipe.recipe_id={getattr(db_recipe, 'recipe_id', None)}, model.id={model['id']}, model={model}")
         return model

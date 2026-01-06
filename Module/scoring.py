@@ -4,7 +4,20 @@ Implements weighted scoring to pick top recipes.
 """
 
 from typing import Optional, Dict
-from .models import Recipe
+# Import Recipe from your models module or define it here if needed
+try:
+    from models import Recipe  # Adjust the import path as needed
+except ImportError:
+    # Minimal Recipe stub for type checking and development
+    class Recipe:
+        def __init__(self):
+            self.ingredients = []
+            self.servings = 1
+            self.popularity = 0
+            self.metadata = {}
+            self.validator_confidence = 0.0
+        def avg_rating(self):
+            return 0.0
 
 
 class ScoringEngine:
@@ -49,9 +62,28 @@ class ScoringEngine:
         return max(0.0, min(1.0, x / max_val))
 
     def score(self, recipe: Recipe) -> float:
+        def get_recipe_attr(recipe, attr):
+            if isinstance(recipe, dict):
+                val = recipe.get(attr, None)
+                # Special case for avg_rating: could be a value or a method
+                if attr == 'avg_rating':
+                    if callable(val):
+                        return val()
+                    return val if val is not None else 0.0
+                return val
+            # For object, handle avg_rating as method or attribute
+            if attr == 'avg_rating':
+                if hasattr(recipe, 'avg_rating'):
+                    avg = getattr(recipe, 'avg_rating')
+                    if callable(avg):
+                        return avg()
+                    return avg
+                return 0.0
+            return getattr(recipe, attr, None)
+
         parts = {}
-        parts['user_rating'] = self.normalize(recipe.avg_rating(), max_val=5.0)
-        parts['validator_confidence'] = recipe.validator_confidence
+        parts['user_rating'] = self.normalize(get_recipe_attr(recipe, 'avg_rating'), max_val=5.0)
+        parts['validator_confidence'] = get_recipe_attr(recipe, 'validator_confidence') or 0.0
         parts['ingredient_authenticity'] = self.ingredient_authenticity_score(recipe)
         parts['serving_scalability'] = self.serving_scalability_score(recipe)
         parts['popularity'] = self.popularity_score(recipe)

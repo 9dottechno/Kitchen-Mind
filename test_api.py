@@ -184,7 +184,7 @@ def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[DEBUG TEST] Response text: {response.text}")
         if response.status_code == 200:
             recipe = response.json()
-            print_success(f"Recipe created: {recipe['title']}")
+            print_success(f"Recipe created: {getattr(recipe, 'title', recipe.get('title')) if not isinstance(recipe, dict) else recipe['title']}")
             return recipe
         else:
             print_error(f"Status code: {response.status_code}")
@@ -220,10 +220,11 @@ def test_get_recipe(recipe: Dict[str, Any]):
         return False
     
     try:
-        response = requests.get(f"{BASE_URL}/recipe/{recipe['id']}")
+        recipe_id = getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']
+        response = requests.get(f"{BASE_URL}/recipe/{recipe_id}")
         if response.status_code == 200:
             retrieved = response.json()
-            print_success(f"Retrieved recipe: {retrieved['title']}")
+            print_success(f"Retrieved recipe: {getattr(retrieved, 'title', retrieved.get('title')) if not isinstance(retrieved, dict) else retrieved['title']}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
@@ -245,8 +246,9 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
         return False
     
     try:
+        recipe_id = getattr(recipe, 'id', recipe.get('id')) if not isinstance(recipe, dict) else recipe['id']
         response = requests.post(
-            f"{BASE_URL}/recipe/{recipe['id']}/rate",
+            f"{BASE_URL}/recipe/{recipe_id}/rate",
             params={"user_id": user["id"], "rating": 4.5}
         )
         print(f"[DEBUG TEST] rate_recipe status: {response.status_code}")
@@ -282,10 +284,11 @@ def test_synthesize_recipe(user: Dict[str, Any]):
             "top_k": 5,
             "reorder": True
         }
+        user_id = getattr(user, 'id', user.get('id')) if not isinstance(user, dict) else user['id']
         response = requests.post(
             f"{BASE_URL}/recipe/synthesize",
             json=synthesis_data,
-            params={"user_id": user["id"]}
+            params={"user_id": user_id}
         )
         print(f"[DEBUG TEST] synthesize_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] synthesize_recipe text: {response.text}")

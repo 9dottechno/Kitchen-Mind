@@ -29,5 +29,5 @@ def get_db():
 
 def init_db():
     # Import all models to ensure they are registered with SQLAlchemy
-    from database.models import *  # Import all models to register them
+    import database.models  # This will register all models and resolve relationships
     Base.metadata.create_all(bind=engine)

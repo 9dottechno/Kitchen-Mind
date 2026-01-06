@@ -20,6 +20,9 @@ import sys
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Tuple
 
+# Helper for safe approved access
+from utils.recipe_helpers import is_approved
+
 # Try to import torch early for environment check (optional)
 try:
     import torch
@@ -102,10 +105,10 @@ class RecipeRepository:
         return [r for r in self.recipes.values() if s in r.title.lower()]
 
     def pending(self) -> List[Recipe]:
-        return [r for r in self.recipes.values() if not r.approved]
+        return [r for r in self.recipes.values() if not is_approved(r)]
 
     def approved(self) -> List[Recipe]:
-        return [r for r in self.recipes.values() if r.approved]
+        return [r for r in self.recipes.values() if is_approved(r)]
 
 # ----------------------------- Vector Store (Mock) -----------------------------
 class MockVectorStore:
