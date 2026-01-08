@@ -246,24 +246,44 @@ class SessionResponse(BaseModel):
     user_id: str
     created_at: str
 
+from fastapi import Request
+
 @app.post("/session", response_model=SessionResponse)
-def create_session(session: SessionCreate, db: Session = Depends(get_db)):
+def create_session(session: SessionCreate, db: Session = Depends(get_db), request: Request = None):
+    print(f"[DEBUG] create_session called with: {session}")
     # Check if user exists
     user = db.query(User).filter(User.user_id == session.user_id).first()
+    print(f"[DEBUG] User lookup for session: {user}")
     if not user:
+        print(f"[DEBUG] User not found for session: {session.user_id}")
         raise HTTPException(status_code=404, detail="User not found")
     from Module.database import Session as DBSession
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timedelta
     now = datetime.utcnow()
+    # Extract user agent and IP address from request
+    user_agent = None
+    ip_address = None
+    if request is not None:
+        user_agent = request.headers.get("user-agent")
+        # Try X-Forwarded-For first, then fallback to client.host
+        ip_address = request.headers.get("x-forwarded-for")
+        if not ip_address and request.client:
+            ip_address = request.client.host
+    expires_at = now + timedelta(hours=1)
     db_session = DBSession(
         session_id=str(uuid.uuid4()),
         user_id=session.user_id,
-        created_at=now
+        created_at=now,
+        expires_at=expires_at,
+        is_active=True,
+        ip_address=ip_address,
+        user_agent=user_agent
     )
     db.add(db_session)
     db.commit()
     db.refresh(db_session)
+    print(f"[DEBUG] Session created: {db_session.session_id} for user: {db_session.user_id}")
     return SessionResponse(
         session_id=db_session.session_id,
         user_id=db_session.user_id,
@@ -310,6 +330,8 @@ class RecipeResponse(BaseModel):
     approved: bool
     popularity: int
     avg_rating: float
+    ingredients: list = None
+    steps: list = None
 
 
 
@@ -412,6 +434,7 @@ class RecipeSynthesisRequest(BaseModel):
     servings: int = 2
     top_k: int = 10
     reorder: bool = True
+    ingredients: Optional[List[IngredientCreate]] = None
 
 
 class RecipeValidationRequest(BaseModel):
@@ -476,21 +499,28 @@ def health_check():
 
 @app.post("/user", response_model=UserResponse)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    print(f"[DEBUG] create_user called with: {user}")
     # Check if role exists
     role = db.query(Role).filter(Role.role_id == user.role_id).first()
+    print(f"[DEBUG] Role lookup for '{user.role_id}': {role}")
     if not role:
+        print(f"[DEBUG] Role '{user.role_id}' does not exist.")
         raise HTTPException(status_code=400, detail=f"Role '{user.role_id}' does not exist.")
 
     # Check for duplicate email or login_identifier
     if db.query(User).filter(User.email == user.email).first():
+        print(f"[DEBUG] Duplicate email: {user.email}")
         raise HTTPException(status_code=409, detail=f"User with email '{user.email}' already exists.")
     if db.query(User).filter(User.login_identifier == user.login_identifier).first():
+        print(f"[DEBUG] Duplicate login_identifier: {user.login_identifier}")
         raise HTTPException(status_code=409, detail=f"User with login_identifier '{user.login_identifier}' already exists.")
 
     # Convert dietary_preference to Enum
     try:
         dietary_pref = DietaryPreferenceEnum[user.dietary_preference] if user.dietary_preference in DietaryPreferenceEnum.__members__ else DietaryPreferenceEnum(user.dietary_preference)
-    except Exception:
+        print(f"[DEBUG] dietary_preference enum: {dietary_pref}")
+    except Exception as e:
+        print(f"[DEBUG] Invalid dietary_preference: {user.dietary_preference}, error: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid dietary_preference: {user.dietary_preference}")
 
     now = datetime.utcnow()
@@ -511,6 +541,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    print(f"[DEBUG] User created: {db_user.user_id}")
     return UserResponse(
         user_id=db_user.user_id,
         name=db_user.name,
@@ -627,7 +658,9 @@ def submit_recipe(
             servings=recipe_obj.servings,
             approved=recipe_obj.approved,
             popularity=getattr(recipe_obj, 'popularity', 0),
-            avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0
+            avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0,
+            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
+            steps=getattr(recipe_obj, 'steps', [])
         )
         print(f"[DEBUG] RecipeResponse: {response}")
         return response
@@ -682,27 +715,35 @@ def synthesize_recipe(
 
     try:
         # Synthesize recipe using controller, then save using repository
-        result = km_instance.request_recipe(
-            user,
-            request.dish_name,
-            request.servings,
-            request.top_k,
-            request.reorder
-        )
-        print(f"[DEBUG] Synthesis result: {result}")
-        print(f"[DEBUG] Synthesis result type: {type(result)}; dir: {dir(result)}")
-        print(f"[DEBUG] Synthesis result class: {result.__class__.__module__}.{result.__class__.__name__}")
-        # Ensure result is a dataclass with 'ingredients' attribute
+        if request.ingredients is not None:
+            result = km_instance.request_recipe(
+                user,
+                request.dish_name,
+                request.servings,
+                request.top_k,
+                request.reorder,
+                request.ingredients
+            )
+        else:
+            result = km_instance.request_recipe(
+                user,
+                request.dish_name,
+                request.servings,
+                request.top_k,
+                request.reorder
+            )
+        # Always ensure result is a dataclass with 'ingredients' attribute
         if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
             print("[DEBUG] result missing 'ingredients' or not a list/tuple, attempting conversion to dataclass")
-            from Module.controller import ensure_recipe_dataclass
             try:
+                from Module.controller import ensure_recipe_dataclass
                 result = ensure_recipe_dataclass(result)
                 print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}")
             except Exception as conv_e:
                 print(f"[ERROR] ensure_recipe_dataclass failed: {conv_e}")
                 raise HTTPException(status_code=500, detail=f"Failed to convert result to Recipe dataclass: {conv_e}")
-        if not hasattr(result, 'ingredients'):
+        # Final check for 'ingredients' attribute
+        if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
             print(f"[ERROR] Even after conversion, result has no 'ingredients'. type={type(result)}, dir={dir(result)}")
             raise HTTPException(status_code=500, detail="Synthesized recipe has no 'ingredients' attribute after conversion.")
         postgres_repo = PostgresRecipeRepository(db)
@@ -729,7 +770,9 @@ def synthesize_recipe(
             servings=recipe_obj.servings,
             approved=getattr(recipe_obj, "approved", False),
             popularity=getattr(recipe_obj, "popularity", 0),
-            avg_rating=recipe_obj.validator_confidence if hasattr(recipe_obj, "validator_confidence") else 0.0
+            avg_rating=recipe_obj.validator_confidence if hasattr(recipe_obj, "validator_confidence") else 0.0,
+            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
+            steps=getattr(recipe_obj, 'steps', [])
         )
         print(f"[DEBUG] Synthesize response: {response}")
         return response
@@ -909,7 +952,9 @@ def ai_review_recipe(recipe_id: str, db: Session = Depends(get_db)):
         servings=recipe.servings,
         approved=recipe.approved,
         popularity=getattr(recipe, "popularity", 0),
-        avg_rating=recipe.avg_rating() if hasattr(recipe, "avg_rating") else 0.0
+        avg_rating=recipe.avg_rating() if hasattr(recipe, "avg_rating") else 0.0,
+        ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe, 'ingredients', [])],
+        steps=getattr(recipe, 'steps', [])
     )
 
 @app.get("/recipe/{recipe_id}", response_model=RecipeResponse)
@@ -926,7 +971,9 @@ def get_single_recipe(recipe_id: str, db: Session = Depends(get_db)):
         servings=recipe.servings,
         approved=recipe.approved,
         popularity=getattr(recipe, "popularity", 0),
-        avg_rating=recipe.avg_rating() if hasattr(recipe, "avg_rating") else 0.0
+        avg_rating=recipe.avg_rating() if hasattr(recipe, "avg_rating") else 0.0,
+        ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe, 'ingredients', [])],
+        steps=getattr(recipe, 'steps', [])
     )
     print(f"[DEBUG] get_single_recipe response: {response}")
     return response

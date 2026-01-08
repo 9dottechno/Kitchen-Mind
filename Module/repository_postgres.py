@@ -268,6 +268,10 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] _to_model steps: {steps}")
         if servings is None:
             servings = 1
+        # Fetch ratings from Feedback table
+        from Module.database import Feedback
+        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == getattr(db_recipe, 'recipe_id', None), Feedback.rating != None).all()
+        ratings = [f.rating for f in feedbacks]
         model = RecipeModel(
             id=getattr(db_recipe, 'recipe_id', None),
             title=db_recipe.dish_name,
@@ -275,7 +279,7 @@ class PostgresRecipeRepository:
             steps=steps,
             servings=servings,
             metadata={},
-            ratings=[],
+            ratings=ratings,
             validator_confidence=0.0,
             popularity=0,
             approved=db_recipe.is_published
