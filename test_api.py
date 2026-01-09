@@ -326,13 +326,19 @@ def test_get_recipe(recipe: Dict[str, Any]):
         return False
     
     try:
-        response = requests.get(f"{BASE_URL}/recipe/{recipe['id']}")
+        # Use version_id for single recipe GET
+        version_id = recipe.get('version_id')
+        if not version_id:
+            print_error("No version_id in recipe object")
+            return False
+        response = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
         if response.status_code == 200:
             retrieved = response.json()
             print_success(f"Retrieved recipe: {retrieved['title']}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
             return False
     except Exception as e:
         print_error(f"Error: {e}")
@@ -359,6 +365,9 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
         print(f"[DEBUG TEST] rate_recipe text: {response.text}")
         if response.status_code == 200:
             result = response.json()
+            # Patch for compatibility: set 'id' if missing
+            if 'id' not in result and 'recipe_id' in result:
+                result['id'] = result['recipe_id']
             print_success(f"Recipe rated: {result}")
             print(f"[DEBUG TEST] rate_recipe response: {result}")
             print(f"[DEBUG TEST] rate_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
@@ -445,7 +454,12 @@ def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
         print_error("No recipe provided for AI review")
         return False
     try:
-        response = requests.post(f"{BASE_URL}/recipe/{recipe['id']}/ai_review")
+        # Use version_id for AI review endpoint
+        version_id = recipe.get('version_id')
+        if not version_id:
+            print_error("No version_id in recipe object for AI review")
+            return False
+        response = requests.post(f"{BASE_URL}/recipe/version/{version_id}/validate")
         print(f"[DEBUG TEST] ai_review_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] ai_review_recipe text: {response.text}")
         if response.status_code == 200:
@@ -557,9 +571,26 @@ def run_all_tests():
     # Approve recipe so synthesis will succeed
     # If validator approval is only via OpenAI API, always use test_ai_review_recipe.
     if recipe:
+        print(f"[DEBUG TEST] recipe object before AI review: {recipe}")
         approved = test_ai_review_recipe(recipe)
+        print(f"[DEBUG TEST] approve_recipe result: {approved}")
+        # Fetch the recipe again to check approval status
+        version_id = recipe.get('version_id')
+        if version_id:
+            resp = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
+            if resp.status_code == 200:
+                fetched_recipe = resp.json()
+                print(f"[DEBUG TEST] Recipe approval status after AI review: approved={fetched_recipe.get('approved')}, version_id={version_id}")
+            else:
+                print_error(f"[DEBUG] Could not fetch recipe after AI review, status: {resp.status_code}")
+        else:
+            print_error("[DEBUG] No version_id in recipe to fetch after AI review!")
+        if not approved:
+            print_error("[DEBUG] Recipe was not approved before synthesis! Check AI review step above.")
+            print_error(f"[DEBUG] Recipe object at failure: {recipe}")
         results["approve_recipe"] = approved
     else:
+        print_error("[DEBUG] No recipe object to approve!")
         results["approve_recipe"] = False
 
     # Get recipes
@@ -579,16 +610,21 @@ def run_all_tests():
     # if recipe and validator:
     #     results["validate_recipe"] = test_validate_recipe(validator, recipe)
 
+
+    # Synthesize recipe
+    print(f"[DEBUG TEST] user object: {user}")
+    if user:
+        print(f"[DEBUG TEST] user object before synthesis: {user}")
+        print(f"[DEBUG TEST] recipe object before synthesis: {recipe}")
+        if not results.get("approve_recipe", False):
+            print_error("[DEBUG] Synthesis will likely fail because recipe is not approved!")
+        results["synthesize_recipe"] = test_synthesize_recipe(user)
+
     # Rate recipe
     print(f"[DEBUG TEST] user object: {user}")
     print(f"[DEBUG TEST] recipe object: {recipe}")
     if recipe and user:
         results["rate_recipe"] = test_rate_recipe(user, recipe)
-
-    # Synthesize recipe
-    print(f"[DEBUG TEST] user object: {user}")
-    if user:
-        results["synthesize_recipe"] = test_synthesize_recipe(user)
 
     # Plan event
     results["plan_event"] = test_plan_event()

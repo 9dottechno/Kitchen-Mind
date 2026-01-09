@@ -1,3 +1,55 @@
+# --- Recipe Score Calculation Utility ---
+def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None):
+    """
+    Update or create RecipeScore for a recipe.
+    ai_scores: dict with keys 'validator_confidence_score', 'ingredient_authenticity_score',
+        'serving_scalability_score', 'ai_confidence_score'.
+    popularity: float (calculated from user interactions)
+    """
+    from sqlalchemy import func
+    from datetime import datetime
+    # 1. Calculate user_rating_score
+    avg_rating = db.query(func.avg(Feedback.rating)).filter(Feedback.recipe_id == recipe_id).scalar() or 0.0
+
+    # 2. Get or create RecipeScore
+    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
+    if not score:
+        import uuid
+        score = RecipeScore(score_id=str(uuid.uuid4()), recipe_id=recipe_id)
+        db.add(score)
+
+    # 3. Set scores
+    score.user_rating_score = avg_rating
+    if ai_scores:
+        score.validator_confidence_score = ai_scores.get('validator_confidence_score', 0.0)
+        score.ingredient_authenticity_score = ai_scores.get('ingredient_authenticity_score', 0.0)
+        score.serving_scalability_score = ai_scores.get('serving_scalability_score', 0.0)
+        score.ai_confidence_score = ai_scores.get('ai_confidence_score', 0.0)
+    if popularity is not None:
+        score.popularity_score = popularity
+
+    # 4. Calculate final_score (example weights, adjust as needed)
+    weights = {
+        'user_rating_score': 0.2,
+        'validator_confidence_score': 0.2,
+        'ingredient_authenticity_score': 0.15,
+        'serving_scalability_score': 0.15,
+        'popularity_score': 0.1,
+        'ai_confidence_score': 0.2
+    }
+    final = (
+        (score.user_rating_score or 0) * weights['user_rating_score'] +
+        (score.validator_confidence_score or 0) * weights['validator_confidence_score'] +
+        (score.ingredient_authenticity_score or 0) * weights['ingredient_authenticity_score'] +
+        (score.serving_scalability_score or 0) * weights['serving_scalability_score'] +
+        (score.popularity_score or 0) * weights['popularity_score'] +
+        (score.ai_confidence_score or 0) * weights['ai_confidence_score']
+    )
+    score.final_score = final
+    score.calculated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(score)
+    return score
 """
 SQLAlchemy database setup and ORM models for KitchenMind.
 """
@@ -122,7 +174,6 @@ class Ingredient(Base):
     name = Column(String)
     quantity = Column(Float)
     unit = Column(String)
-    notes = Column(String)
     version = relationship("RecipeVersion", back_populates="ingredients")
 
 class Step(Base):

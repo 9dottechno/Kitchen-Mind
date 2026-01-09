@@ -6,6 +6,51 @@ Orchestrates all components: recipes, users, synthesis, validation, etc.
 import uuid
 from typing import Dict, List, Optional
 from .models import User, Recipe, Ingredient
+
+# --- Robust Recipe dataclass conversion utility ---
+def ensure_recipe_dataclass(obj):
+    from .models import Recipe as RecipeModel
+    # Accepts RecipeModel, dict, or any object with attributes
+    if isinstance(obj, RecipeModel):
+        return obj
+    if isinstance(obj, dict):
+        ingredients = obj.get('ingredients', [])
+        steps = obj.get('steps', [])
+        return RecipeModel(
+            id=obj.get('id') or obj.get('recipe_id'),
+            title=obj.get('title') or obj.get('dish_name', ''),
+            ingredients=ingredients if isinstance(ingredients, list) else [],
+            steps=steps if isinstance(steps, list) else [],
+            servings=obj.get('servings', 1),
+            metadata=obj.get('metadata', {}),
+            ratings=obj.get('ratings', []),
+            validator_confidence=obj.get('validator_confidence', 0.0),
+            popularity=obj.get('popularity', 0),
+            approved=obj.get('approved', False),
+            rejection_suggestions=obj.get('rejection_suggestions', [])
+        )
+    # Fallback for any object
+    ingredients = getattr(obj, 'ingredients', None)
+    if ingredients is None or not isinstance(ingredients, list):
+        print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'ingredients'. Setting to empty list.")
+        ingredients = []
+    steps = getattr(obj, 'steps', None)
+    if steps is None or not isinstance(steps, list):
+        print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'steps'. Setting to empty list.")
+        steps = []
+    return RecipeModel(
+        id=getattr(obj, 'id', getattr(obj, 'recipe_id', None)),
+        title=getattr(obj, 'title', getattr(obj, 'dish_name', '')),
+        ingredients=ingredients,
+        steps=steps,
+        servings=getattr(obj, 'servings', 1),
+        metadata=getattr(obj, 'metadata', {}),
+        ratings=getattr(obj, 'ratings', []),
+        validator_confidence=getattr(obj, 'validator_confidence', 0.0),
+        popularity=getattr(obj, 'popularity', 0),
+        approved=getattr(obj, 'approved', False),
+        rejection_suggestions=getattr(obj, 'rejection_suggestions', [])
+    )
 from .repository_postgres import PostgresRecipeRepository
 from .database import SessionLocal
 from .vector_store import MockVectorStore
@@ -204,22 +249,45 @@ class KitchenMind:
         
         return suggestions
 
-    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True) -> Recipe:
-        """Request a synthesized recipe for a specific dish and serving size."""
+    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True, ingredients: list = None, steps: list = None) -> Recipe:
+        """Request a synthesized recipe for a specific dish and serving size, optionally with custom ingredients."""
         if not user:
             raise ValueError("User cannot be None")
-        
         if servings <= 0:
             raise ValueError("Servings must be positive")
-        
-        # Try direct title match first (preferred)
+
+        # ...existing code...
+
+        # If custom ingredients are provided, synthesize directly
+        if ingredients is not None:
+            from .models import Recipe as RecipeModel
+            custom_recipe = RecipeModel(
+                id=None,
+                title=dish_name,
+                ingredients=ingredients,
+                steps=steps if steps is not None else [],
+                servings=servings,
+                metadata={},
+                ratings=[],
+                validator_confidence=0.0,
+                popularity=0,
+                approved=False,
+                rejection_suggestions=[]
+            )
+            synthesized = self.synth.synthesize([custom_recipe], servings, reorder=reorder)
+            synthesized = ensure_recipe_dataclass(synthesized)
+            print(f"[DEBUG] After synthesize: type={type(synthesized)}, dir={dir(synthesized)}, repr={repr(synthesized)}")
+            self.recipes.add(synthesized)
+            self.vstore.index(synthesized)
+            self.tokens.reward_user_request(user, amount=0.25)
+            return synthesized
+
+        # Otherwise, use the normal candidate search and synthesis
         direct = [r for r in self.recipes.find_by_title(dish_name) if hasattr(r, 'approved') and r.approved]
         candidates = []
-
         if direct:
             candidates = direct
         else:
-            # Fallback to semantic search
             search_text = f"{dish_name} for {servings} servings"
             results = self.vstore.query(search_text, top_k=top_k)
             candidate_ids = [rid for rid, _ in results]
@@ -228,43 +296,12 @@ class KitchenMind:
                 for rid in candidate_ids
                 if self.recipes.get(rid) and hasattr(self.recipes.get(rid), 'approved') and self.recipes.get(rid).approved
             ]
-
         if not candidates:
             raise LookupError(f'No approved recipes found for "{dish_name}"')
-
-        # Prefer recipes with dish name in title
         named = [r for r in candidates if hasattr(r, 'title') and dish_name.lower() in r.title.lower()]
         if named:
             candidates = named
-
-        # Ensure all candidates are Recipe dataclass instances
-        from .models import Recipe as RecipeModel
-        def ensure_recipe_dataclass(obj):
-            if isinstance(obj, RecipeModel):
-                return obj
-            # Try to convert if possible
-            ingredients = getattr(obj, 'ingredients', None)
-            if ingredients is None:
-                print(f"[DEBUG] WARNING: Recipe object {obj} missing 'ingredients' attribute. Setting to empty list.")
-                ingredients = []
-            elif not isinstance(ingredients, list):
-                print(f"[DEBUG] WARNING: Recipe object {obj} has non-list 'ingredients'. Setting to empty list.")
-                ingredients = []
-            return RecipeModel(
-                id=getattr(obj, 'id', getattr(obj, 'recipe_id', None)),
-                title=getattr(obj, 'title', getattr(obj, 'dish_name', '')),
-                ingredients=ingredients,
-                steps=getattr(obj, 'steps', []),
-                servings=getattr(obj, 'servings', 1),
-                metadata=getattr(obj, 'metadata', {}),
-                ratings=getattr(obj, 'ratings', []),
-                validator_confidence=getattr(obj, 'validator_confidence', 0.0),
-                popularity=getattr(obj, 'popularity', 0),
-                approved=getattr(obj, 'approved', False),
-                rejection_suggestions=getattr(obj, 'rejection_suggestions', [])
-            )
         top_candidates = [ensure_recipe_dataclass(r) for r in candidates]
-        # Debug: Check all top_candidates for valid ingredients
         for idx, r in enumerate(top_candidates):
             if not hasattr(r, 'ingredients'):
                 print(f"[DEBUG] ERROR: Candidate recipe at index {idx} missing 'ingredients' attribute: {r}")
@@ -274,17 +311,13 @@ class KitchenMind:
                 raise TypeError(f"Candidate recipe at index {idx} has non-list 'ingredients'")
             if not r.ingredients:
                 print(f"[DEBUG] WARNING: Candidate recipe at index {idx} has empty 'ingredients' list: {r}")
-
-        # Score and synthesize
         scored = [(r, self.scorer.score(r)) for r in top_candidates]
         scored.sort(key=lambda x: x[1], reverse=True)
         top_n = [r for r, _ in scored[:2]]
-
         synthesized = self.synth.synthesize(top_n, servings, reorder=reorder)
+        synthesized = ensure_recipe_dataclass(synthesized)
         self.recipes.add(synthesized)
         self.vstore.index(synthesized)
-
-        # Reward user
         self.tokens.reward_user_request(user, amount=0.25)
         return synthesized
 

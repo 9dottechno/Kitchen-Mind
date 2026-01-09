@@ -101,8 +101,7 @@ class PostgresRecipeRepository:
                 version_id=version_id,
                 name=ing.name,
                 quantity=ing.quantity,
-                unit=ing.unit,
-                notes=None
+                unit=ing.unit
             ) for ing in safe_ingredients
         ]
         db_version.steps = [
@@ -139,8 +138,7 @@ class PostgresRecipeRepository:
                 version_id=None,  # Set appropriately if available
                 name=ing.name,
                 quantity=ing.quantity,
-                unit=ing.unit,
-                notes=None
+                unit=ing.unit
             )
             db_recipe.ingredients.append(db_ing)
         # Add steps
@@ -182,9 +180,18 @@ class PostgresRecipeRepository:
         return [self._to_model(r) for r in db_recipes]
     
     def approved(self) -> List[RecipeModel]:
-        """Get all approved recipes."""
+        """Get all approved recipes with ingredients and steps populated."""
         db_recipes = self.db.query(DBRecipe).filter(DBRecipe.is_published == True).all()
-        return [self._to_model(r) for r in db_recipes]
+        models = []
+        for r in db_recipes:
+            model = self._to_model(r)
+            # Ensure ingredients and steps are not None
+            if model.ingredients is None:
+                model.ingredients = []
+            if model.steps is None:
+                model.steps = []
+            models.append(model)
+        return models
     
     def update(self, recipe: RecipeModel):
         """Update an existing recipe."""
@@ -264,6 +271,11 @@ class PostgresRecipeRepository:
             ingredients = []
             steps = []
             servings = getattr(db_recipe, 'servings', 1)
+        # Ensure ingredients and steps are always lists
+        if ingredients is None:
+            ingredients = []
+        if steps is None:
+            steps = []
         print(f"[DEBUG] _to_model ingredients: {ingredients}")
         print(f"[DEBUG] _to_model steps: {steps}")
         if servings is None:
