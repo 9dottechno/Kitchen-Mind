@@ -444,12 +444,32 @@ class RecipeValidationRequest(BaseModel):
     confidence: float = 0.8
 
 
+class EventPlanResponse(BaseModel):
+    event: str
+    user_id: str
+    guest_count: int
+    budget_per_person: float
+    dietary: Optional[str] = None
+
 class EventPlanRequest(BaseModel):
     """Schema for event planning request."""
+    user_id: str
     event_name: str
     guest_count: int
     budget_per_person: float
     dietary: Optional[str] = None
+
+@app.post("/event/plan", response_model=EventPlanResponse)
+def plan_event(request: EventPlanRequest):
+    """Plan an event and return details."""
+    # Here you can add logic to store or process the event
+    return EventPlanResponse(
+        event=request.event_name,
+        user_id=request.user_id,
+        guest_count=request.guest_count,
+        budget_per_person=request.budget_per_person,
+        dietary=request.dietary
+    )
 
 
 # ============================================================================
@@ -728,84 +748,61 @@ def synthesize_recipe(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        # Synthesize recipe using controller, then save using repository
-        # Use keyword arguments to avoid too many positional arguments
-        kwargs = {
-            'user': user,
-            'dish_name': request.dish_name,
-            'servings': request.servings
-        }
-        if request.ingredients is not None:
-            kwargs['ingredients'] = request.ingredients
-        result = km_instance.request_recipe(**kwargs)
-        print(f"[DEBUG] Before ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-        from Module.controller import ensure_recipe_dataclass
-        result = ensure_recipe_dataclass(result)
-        print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-        if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
-            print(f"[ERROR] Synthesized recipe has no 'ingredients' attribute after ensure_recipe_dataclass. type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-            raise HTTPException(status_code=500, detail="Synthesized recipe has no 'ingredients' attribute after conversion.")
-        postgres_repo = PostgresRecipeRepository(db)
-        print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
-        try:
-            ings = result.ingredients
-        except Exception as attr_e:
-            print(f"[ERROR] Exception accessing result.ingredients: {attr_e}")
-            print(f"[ERROR] result type: {type(result)}; dir: {dir(result)}; repr: {repr(result)}")
-            raise HTTPException(status_code=500, detail=f"Synthesized recipe object has no 'ingredients' attribute: {attr_e}")
-        recipe_obj = postgres_repo.create_recipe(
-            title=result.title,
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
-            steps=result.steps,
-            servings=result.servings,
-            submitted_by=user.user_id
-        )
-        print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
-        print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
-        # Ensure ingredients and steps are in the expected format
-        # Get version_id from the database
-        version_id = None
-        from Module.database import Recipe as DBRecipe
-        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-        if db_recipe and hasattr(db_recipe, 'current_version_id'):
-            version_id = db_recipe.current_version_id
-        response = RecipeResponse(
-            recipe_id=recipe_obj.id,
-            version_id=version_id,
-            title=recipe_obj.title,
-            servings=recipe_obj.servings,
-            approved=getattr(recipe_obj, "approved", False),
-            popularity=getattr(recipe_obj, "popularity", 0),
-            avg_rating=recipe_obj.validator_confidence if hasattr(recipe_obj, "validator_confidence") else 0.0,
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
-            steps=getattr(recipe_obj, 'steps', [])
-        )
-        print(f"[DEBUG] Synthesize response: {response}")
-        return response
-    except LookupError as e:
-        print(f"[ERROR] synthesize_recipe LookupError: {e}")
-        raise HTTPException(status_code=404, detail=str(e))
+            # Synthesize recipe using controller, then save using repository
+            # Use keyword arguments to avoid too many positional arguments
+            kwargs = {
+                'user': user,
+                'dish_name': request.dish_name,
+                'servings': request.servings
+            }
+            if request.ingredients is not None:
+                kwargs['ingredients'] = request.ingredients
+            result = km_instance.request_recipe(**kwargs)
+            print(f"[DEBUG] Before ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
+            from Module.controller import ensure_recipe_dataclass
+            result = ensure_recipe_dataclass(result)
+            print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
+            if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
+                print(f"[ERROR] Synthesized recipe has no 'ingredients' attribute after ensure_recipe_dataclass. type={type(result)}, dir={dir(result)}, repr={repr(result)}")
+                raise HTTPException(status_code=500, detail="Synthesized recipe has no 'ingredients' attribute after conversion.")
+            postgres_repo = PostgresRecipeRepository(db)
+            print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
+            try:
+                ings = result.ingredients
+            except Exception as attr_e:
+                print(f"[ERROR] Exception accessing result.ingredients: {attr_e}")
+                print(f"[ERROR] result type: {type(result)}; dir: {dir(result)}; repr: {repr(result)}")
+                raise HTTPException(status_code=500, detail=f"Synthesized recipe object has no 'ingredients' attribute: {attr_e}")
+            recipe_obj = postgres_repo.create_recipe(
+                title=result.title,
+                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
+                steps=result.steps,
+                servings=result.servings,
+                submitted_by=user.user_id
+            )
+            print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
+            print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
+            # Get version_id from the database
+            version_id = None
+            from Module.database import Recipe as DBRecipe
+            db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
+            if db_recipe and hasattr(db_recipe, 'current_version_id'):
+                version_id = db_recipe.current_version_id
+            response = RecipeResponse(
+                recipe_id=recipe_obj.id,
+                version_id=version_id,
+                title=recipe_obj.title,
+                servings=recipe_obj.servings,
+                approved=recipe_obj.approved,
+                popularity=getattr(recipe_obj, 'popularity', 0),
+                avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0,
+                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
+                steps=getattr(recipe_obj, 'steps', [])
+            )
+            print(f"[DEBUG] RecipeResponse: {response}")
+            return response
     except Exception as e:
-        print(f"[ERROR] synthesize_recipe Exception: {e}")
-        raise HTTPException(status_code=500, detail=f"Synthesis error: {str(e)}")
-
-
-# ============================================================================
-# Event Planning Endpoints
-# ============================================================================
-
-@app.post("/event/plan")
-def plan_event(request: EventPlanRequest):
-    """Plan an event with recipes."""
-    try:
-        plan = km_instance.event_plan(
-            request.event_name,
-            request.guest_count,
-            request.budget_per_person,
-            request.dietary
-        )
-        return plan
-    except Exception as e:
+        print(f"[ERROR] synthesize_recipe exception: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -887,6 +884,34 @@ def ai_review_recipe(version_id: str, db: Session = Depends(get_db)):
     db.refresh(version)
     db.refresh(recipe)
 
+    # --- Update recipe_scores table ---
+    from Module.scoring import ScoringEngine
+    from Module.database import update_recipe_score
+    scorer = ScoringEngine()
+    # Build a mock recipe object for scoring
+    class MockRecipe:
+        def __init__(self, recipe, version):
+            self.recipe_id = recipe.recipe_id
+            self.dish_name = recipe.dish_name
+            self.servings = recipe.servings
+            self.popularity = getattr(recipe, 'popularity', 0)
+            self.validator_confidence = confidence
+            self.metadata = {'ai_confidence': confidence}
+            self.ingredients = version.ingredients
+            self.steps = version.steps
+        def avg_rating(self):
+            # Optionally, implement average rating logic if needed
+            return 0.0
+    mock_recipe = MockRecipe(recipe, version)
+    ai_scores = {
+        'validator_confidence_score': scorer.score(mock_recipe),
+        'ingredient_authenticity_score': scorer.ingredient_authenticity_score(mock_recipe),
+        'serving_scalability_score': scorer.serving_scalability_score(mock_recipe),
+        'ai_confidence_score': scorer.ai_confidence_score(mock_recipe)
+    }
+    popularity_score = scorer.popularity_score(mock_recipe)
+    update_recipe_score(db, recipe.recipe_id, ai_scores=ai_scores, popularity=popularity_score)
+
     return ValidationResponse(
         validation_id=validation.validation_id,
         version_id=validation.version_id,
@@ -917,14 +942,19 @@ def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db))
         .first()
     )
     approved = latest_validation.approved if latest_validation and latest_validation.approved is not None else False
+    # Fetch scores from recipe_scores table if available
+    from Module.database import RecipeScore
+    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe.recipe_id).first()
+    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else (version.avg_rating if hasattr(version, "avg_rating") else 0.0)
+    popularity = score.popularity_score if score and score.popularity_score is not None else getattr(recipe, "popularity", 0)
     response = RecipeResponse(
         recipe_id=recipe.recipe_id,
         version_id=version.version_id,
         title=recipe.dish_name,
         servings=version.base_servings if hasattr(version, 'base_servings') and version.base_servings else getattr(recipe, 'servings', 1),
         approved=approved,
-        popularity=getattr(recipe, "popularity", 0),
-        avg_rating=version.avg_rating if hasattr(version, "avg_rating") else 0.0,
+        popularity=popularity,
+        avg_rating=avg_rating,
         ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(version, 'ingredients', [])],
         steps=[step.instruction for step in sorted(getattr(version, 'steps', []), key=lambda x: x.step_order)]
     )
@@ -935,31 +965,50 @@ def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db))
 # ============================================================================
 # Rate Recipe Endpoint
 # ============================================================================
-@app.post("/recipe/{recipe_id}/rate")
-def rate_recipe(recipe_id: str, user_id: str = Query(...), rating: float = Query(...), db: Session = Depends(get_db)):
-    print(f"[DEBUG] rate_recipe called with recipe_id={recipe_id}, user_id={user_id}, rating={rating}")
+
+from fastapi import Body
+
+@app.post("/recipe/version/{version_id}/rate")
+def rate_recipe(
+    version_id: str,
+    user_id: str = Query(...),
+    rating: float = Query(...),
+    comment: str = Body(default=None, embed=True),
+    db: Session = Depends(get_db)
+):
+    print(f"[DEBUG] rate_recipe called with version_id={version_id}, user_id={user_id}, rating={rating}, comment={comment}")
+    from Module.database import RecipeVersion
+    version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
+    if not version:
+        print("[DEBUG] Recipe version not found")
+        raise HTTPException(status_code=404, detail="Recipe version not found")
+    recipe_id = version.recipe_id
+    from Module.repository_postgres import PostgresRecipeRepository
     postgres_repo = PostgresRecipeRepository(db)
-    recipe = postgres_repo.get(recipe_id)
-    if not recipe:
-        print("[DEBUG] Recipe not found")
-        raise HTTPException(status_code=404, detail="Not Found")
     # Optionally, check user exists
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         print("[DEBUG] User not found")
         raise HTTPException(status_code=404, detail="User not found")
-    # Add or update rating
-    postgres_repo.add_rating(recipe_id, user_id, rating)
-    print(f"[DEBUG] Rating added/updated for recipe {recipe_id} by user {user_id}")
-    # Return recipe info as response
+    # Add or update rating and comment
+    feedback = postgres_repo.add_rating(version_id, user_id, rating, comment)
+    print(f"[DEBUG] Rating and comment added/updated for version {version_id} by user {user_id}")
+    # Update recipe_scores
+    from Module.database import update_recipe_score, RecipeScore
+    update_recipe_score(db, recipe_id)
+    # Fetch updated scores
+    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
+    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else (version.avg_rating if hasattr(version, "avg_rating") else 0.0)
+    popularity = score.popularity_score if score and score.popularity_score is not None else None
     return {
-        "recipe_id": recipe.id,
-        "version_id": getattr(recipe, 'version_id', None),
-        "title": recipe.title,
-        "servings": recipe.servings,
-        "approved": recipe.approved,
-        "popularity": getattr(recipe, "popularity", 0),
-        "avg_rating": recipe.avg_rating() if hasattr(recipe, "avg_rating") else 0.0
+        "recipe_id": recipe_id,
+        "version_id": version_id,
+        "title": version.recipe.dish_name if version.recipe else None,
+        "servings": version.base_servings if hasattr(version, 'base_servings') and version.base_servings else None,
+        "approved": version.recipe.is_published if version.recipe else None,
+        "popularity": popularity,
+        "avg_rating": avg_rating,
+        "comment": feedback.comment
     }
 
 # ============================================================================

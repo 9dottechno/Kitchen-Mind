@@ -142,7 +142,7 @@ class Synthesizer:
         """
         Improved ensure_ingredient_coverage. (Rewritten to fix insertion/order/index bugs.)
         """
-        import re
+        
 
         if not merged_ings:
             print("DEBUG: no merged_ings -> returning unchanged out_lines")
@@ -2883,6 +2883,7 @@ class Synthesizer:
 
         # Normalize soak duration to a single range and ensure drain
         for idx, s in enumerate(out_lines):
+
             if re.search(r'\bsoak\b', s, flags=re.I):
                 if not re.search(r'\d+\s*[-–]\s*\d+\s*hours?', s, flags=re.I):
                     if re.search(r'\b\d+\s*hours?\b', s, flags=re.I):
@@ -2891,6 +2892,9 @@ class Synthesizer:
                         out_lines[idx] = s.rstrip(' .;') + ' for 4-6 hours.'
                 if 'drain' not in out_lines[idx].lower():
                     out_lines[idx] = out_lines[idx].rstrip(' .;') + ', then drain.'
+
+        # Remove [AUTO-GEN] prefix from all steps before returning
+        out_lines = [line.replace('[AUTO-GEN] ', '') if line.startswith('[AUTO-GEN]') else line for line in out_lines]
 
         # If soy sauce is already added later, remove earlier soy-only steps (don't strip from multi-ingredient steps)
         soy_indices = [i for i, s in enumerate(out_lines) if re.search(r'\bsoy\s+sauce\b', s, flags=re.I)]
@@ -2984,8 +2988,14 @@ class Synthesizer:
         print(f"DEBUG: final ai_conf={ai_conf}, validator_conf={validator_conf}")
 
         # Prepare title
+        
         base_title = top_recipes[0].title.split(':')[0].strip()
-        title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
+        # Remove any previous '(for N servings)' from the base title
+        base_title = re.sub(r'\s*\(for \d+ servings\)$', '', base_title)
+        if not base_title.startswith("Synthesized --"):
+            title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
+        else:
+            title = f"{base_title} (for {requested_servings} servings)"
         print("DEBUG: final recipe title =", title)
 
         # Metadata

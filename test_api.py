@@ -357,15 +357,19 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
         return False
     
     try:
+        version_id = recipe.get('version_id')
+        if not version_id:
+            print_error("No version_id in recipe object for rating")
+            return False
         response = requests.post(
-            f"{BASE_URL}/recipe/{recipe['id']}/rate",
-            params={"user_id": user["id"], "rating": 4.5}
+            f"{BASE_URL}/recipe/version/{version_id}/rate",
+            params={"user_id": user["id"], "rating": 4.5},
+            json={"comment": "Great recipe!"}
         )
         print(f"[DEBUG TEST] rate_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] rate_recipe text: {response.text}")
         if response.status_code == 200:
             result = response.json()
-            # Patch for compatibility: set 'id' if missing
             if 'id' not in result and 'recipe_id' in result:
                 result['id'] = result['recipe_id']
             print_success(f"Recipe rated: {result}")
@@ -409,8 +413,14 @@ def test_synthesize_recipe(user: Dict[str, Any]):
             print_success(f"Recipe synthesized: {result}")
             print(f"[DEBUG TEST] synthesize_recipe response: {result}")
             print(f"[DEBUG TEST] synthesize_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
-            if 'id' not in result:
-                print_error("'id' key missing in synthesize_recipe response!")
+            if 'recipe_id' not in result and 'version_id' not in result:
+                print_error("'recipe_id' or 'version_id' key missing in synthesize_recipe response!")
+            # Print steps with explicit minutes
+            steps = result.get('steps', [])
+            print("\n[TEST] Steps with explicit minutes:")
+            for step in steps:
+                if any(word in step.lower() for word in ['minute', 'minutes', 'min']):
+                    print(f"  - {step}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
@@ -425,21 +435,30 @@ def test_plan_event():
     """Test event planning."""
     print_test("Plan Event")
     try:
+        # You must provide a valid user_id for event planning
+        # For test, create or fetch a user
+        user_resp = requests.get(f"{BASE_URL}/user/email/test_trainer@example.com")
+        if user_resp.status_code == 200:
+            user = user_resp.json()
+            user_id = user.get("user_id") or user.get("id")
+        else:
+            print_error("No test user found for event planning")
+            return False
         event_data = {
+            "user_id": user_id,
             "event_name": "Test Party",
             "guest_count": 20,
             "budget_per_person": 5.0,
             "dietary": None
         }
-        
         response = requests.post(f"{BASE_URL}/event/plan", json=event_data)
-        
         if response.status_code == 200:
             result = response.json()
             print_success(f"Event planned: {result['event']}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
             return False
     except Exception as e:
         print_error(f"Error: {e}")

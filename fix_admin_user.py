@@ -10,7 +10,15 @@ DATABASE_URL = os.getenv(
     "postgresql://kitchenmind:password@localhost:5432/kitchenmind"
 )
 
-engine = create_engine(DATABASE_URL)
+from sqlalchemy import create_engine
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,      # Checks connection before use, auto-reconnects
+    pool_size=10,            # Number of connections to keep in pool
+    max_overflow=20,         # Extra connections allowed above pool_size
+    pool_recycle=1800        # Recycle connections every 30 min
+)
 
 with engine.begin() as conn:
     result = conn.execute(

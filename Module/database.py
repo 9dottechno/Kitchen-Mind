@@ -9,7 +9,16 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None):
     from sqlalchemy import func
     from datetime import datetime
     # 1. Calculate user_rating_score
-    avg_rating = db.query(func.avg(Feedback.rating)).filter(Feedback.recipe_id == recipe_id).scalar() or 0.0
+    # Find all version_ids for this recipe
+    version_ids = [v.version_id for v in db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe_id).all()]
+    avg_rating = 0.0
+    if version_ids:
+        avg_rating = db.query(func.avg(Feedback.rating)).filter(Feedback.version_id.in_(version_ids)).scalar() or 0.0
+    # Ensure avg_rating is a float (func.avg may return Decimal)
+    try:
+        avg_rating = float(avg_rating)
+    except Exception:
+        avg_rating = 0.0
 
     # 2. Get or create RecipeScore
     score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
@@ -49,6 +58,14 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None):
     score.calculated_at = datetime.utcnow()
     db.commit()
     db.refresh(score)
+    # --- Sync validator_confidence and avg_rating to RecipeVersion ---
+    from sqlalchemy import desc
+    version = db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe_id).order_by(desc(RecipeVersion.submitted_at)).first()
+    if version:
+        version.validator_confidence = score.validator_confidence_score
+        version.avg_rating = score.user_rating_score
+        db.commit()
+        db.refresh(version)
     return score
 """
 SQLAlchemy database setup and ORM models for KitchenMind.
@@ -70,7 +87,15 @@ DATABASE_URL = os.getenv(
     "postgresql://kitchenmind:password@localhost:5432/kitchenmind"
 )
 
-engine = create_engine(DATABASE_URL)
+from sqlalchemy import create_engine
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,      # Checks connection before use, auto-reconnects
+    pool_size=10,            # Number of connections to keep in pool
+    max_overflow=20,         # Extra connections allowed above pool_size
+    pool_recycle=1800        # Recycle connections every 30 min
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -148,7 +173,7 @@ class Recipe(Base):
     created_at = Column(DateTime)
     creator = relationship("User", back_populates="recipes")
     versions = relationship("RecipeVersion", back_populates="recipe")
-    feedbacks = relationship("Feedback", back_populates="recipe")
+    # feedbacks relationship removed; now on RecipeVersion
     recipe_score = relationship("RecipeScore", uselist=False, back_populates="recipe")
     token_transactions = relationship("TokenTransaction", back_populates="recipe")
 
@@ -166,6 +191,7 @@ class RecipeVersion(Base):
     ingredients = relationship("Ingredient", back_populates="version")
     steps = relationship("Step", back_populates="version")
     validations = relationship("Validation", back_populates="version")
+    feedbacks = relationship("Feedback", back_populates="version")
 
 class Ingredient(Base):
     __tablename__ = "ingredients"
@@ -197,7 +223,7 @@ class Validation(Base):
 class Feedback(Base):
     __tablename__ = "feedbacks"
     feedback_id = Column(String, primary_key=True)
-    recipe_id = Column(String, ForeignKey("recipes.recipe_id"))
+    version_id = Column(String, ForeignKey("recipe_versions.version_id"))
     user_id = Column(String, ForeignKey("user.user_id"))
     created_at = Column(DateTime)
     rating = Column(Integer)
@@ -205,7 +231,7 @@ class Feedback(Base):
     flagged = Column(Boolean, default=False)
     is_revised = Column(Boolean, default=False)
     revised_at = Column(DateTime)
-    recipe = relationship("Recipe", back_populates="feedbacks")
+    version = relationship("RecipeVersion", back_populates="feedbacks")
     user = relationship("User", back_populates="feedbacks")
 
 class TokenTransaction(Base):

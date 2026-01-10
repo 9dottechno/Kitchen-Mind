@@ -12,14 +12,28 @@ def ensure_recipe_dataclass(obj):
     from .models import Recipe as RecipeModel
     # Accepts RecipeModel, dict, or any object with attributes
     if isinstance(obj, RecipeModel):
+        # Ensure all ingredients are Ingredient objects
+        from .models import Ingredient as IngredientModel
+        ingredients = [
+            ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+            for ing in getattr(obj, 'ingredients', [])
+        ]
+        obj.ingredients = ingredients
         return obj
     if isinstance(obj, dict):
+        from .models import Ingredient as IngredientModel
         ingredients = obj.get('ingredients', [])
+        # Convert dicts to Ingredient objects if needed
+        ingredients = [
+            ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+            for ing in ingredients
+            if isinstance(ing, (dict, IngredientModel))
+        ]
         steps = obj.get('steps', [])
         return RecipeModel(
             id=obj.get('id') or obj.get('recipe_id'),
             title=obj.get('title') or obj.get('dish_name', ''),
-            ingredients=ingredients if isinstance(ingredients, list) else [],
+            ingredients=ingredients,
             steps=steps if isinstance(steps, list) else [],
             servings=obj.get('servings', 1),
             metadata=obj.get('metadata', {}),
@@ -30,10 +44,17 @@ def ensure_recipe_dataclass(obj):
             rejection_suggestions=obj.get('rejection_suggestions', [])
         )
     # Fallback for any object
+    from .models import Ingredient as IngredientModel
     ingredients = getattr(obj, 'ingredients', None)
     if ingredients is None or not isinstance(ingredients, list):
         print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'ingredients'. Setting to empty list.")
         ingredients = []
+    # Convert dicts to Ingredient objects if needed
+    ingredients = [
+        ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+        for ing in ingredients
+        if isinstance(ing, (dict, IngredientModel))
+    ]
     steps = getattr(obj, 'steps', None)
     if steps is None or not isinstance(steps, list):
         print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'steps'. Setting to empty list.")
@@ -178,6 +199,16 @@ class KitchenMind:
             print(f"  Suggestions sent to trainer for improvement")
         # Reward admin for validation
         self.tokens.reward_validator(admin, amount=0.5)
+        # --- Save AI scores to recipe_scores table ---
+        from .database import update_recipe_score
+        ai_scores = {
+            'validator_confidence_score': r.validator_confidence,
+            'ingredient_authenticity_score': self.scorer.ingredient_authenticity_score(r),
+            'serving_scalability_score': self.scorer.serving_scalability_score(r),
+            'ai_confidence_score': self.scorer.ai_confidence_score(r)
+        }
+        popularity = self.scorer.popularity_score(r)
+        update_recipe_score(self.db_session, recipe_id, ai_scores=ai_scores, popularity=popularity)
         return r
     
     def _generate_ai_suggestions(self, recipe: Recipe, feedback: Optional[str], confidence: float) -> List[str]:

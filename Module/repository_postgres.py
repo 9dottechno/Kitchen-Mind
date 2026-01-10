@@ -9,6 +9,13 @@ from Module.models import Recipe as RecipeModel, Ingredient
 
 
 class PostgresRecipeRepository:
+    @staticmethod
+    def extract_minutes(instruction):
+        import re
+        match = re.search(r"(\d+)\s*(minute|min)s?", instruction.lower())
+        if match:
+            return int(match.group(1))
+        return None
     def list(self) -> list:
         """Return all recipes in the database as RecipeModel objects."""
         db_recipes = self.db.query(self.model).all()
@@ -17,32 +24,35 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] list() returning models: {[m.id for m in models]}")
         return models
 
-    def add_rating(self, recipe_id: str, user_id: str, rating: float):
-        """Add or update a user's rating for a recipe in the Feedback table."""
+    def add_rating(self, version_id: str, user_id: str, rating: float, comment: str = None):
+        """Add or update a user's rating and comment for a recipe version in the Feedback table."""
         from Module.database import Feedback
         from datetime import datetime
-        feedback = self.db.query(Feedback).filter(Feedback.recipe_id == recipe_id, Feedback.user_id == user_id).first()
+        feedback = self.db.query(Feedback).filter(Feedback.version_id == version_id, Feedback.user_id == user_id).first()
         if feedback:
             feedback.rating = rating
-            feedback.created_at = datetime.utcnow()
+            if comment is not None:
+                feedback.comment = comment
+            feedback.is_revised = True
+            feedback.revised_at = datetime.utcnow()
         else:
             feedback = Feedback(
                 feedback_id=str(uuid.uuid4()),
-                recipe_id=recipe_id,
+                version_id=version_id,
                 user_id=user_id,
                 created_at=datetime.utcnow(),
                 rating=rating,
-                comment=None
+                comment=comment
             )
             self.db.add(feedback)
         self.db.commit()
         self.db.refresh(feedback)
         return feedback
 
-    def get_ratings(self, recipe_id: str):
-        """Get all ratings for a recipe from the Feedback table."""
+    def get_ratings(self, version_id: str):
+        """Get all ratings for a recipe version from the Feedback table."""
         from Module.database import Feedback
-        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == recipe_id).all()
+        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == version_id).all()
         return [fb.rating for fb in feedbacks if fb.rating is not None]
 
     def create_recipe(self, title, ingredients, steps, servings, submitted_by=None):
@@ -104,15 +114,16 @@ class PostgresRecipeRepository:
                 unit=ing.unit
             ) for ing in safe_ingredients
         ]
-        db_version.steps = [
-            DBStep(
+        db_version.steps = []
+        for idx, step_text in enumerate(steps):
+            minutes = self.extract_minutes(step_text)
+            db_version.steps.append(DBStep(
                 step_id=str(uuid.uuid4()),
                 version_id=version_id,
                 step_order=idx,
                 instruction=step_text,
-                minutes=None
-            ) for idx, step_text in enumerate(steps)
-        ]
+                minutes=minutes
+            ))
         return db_version
 
     """Repository using PostgreSQL for persistent storage."""
@@ -122,35 +133,28 @@ class PostgresRecipeRepository:
         self.model = DBRecipe  # Set self.model to the Recipe SQLAlchemy model
     
     def add(self, recipe: RecipeModel):
-        """Add a new recipe to the database."""
+        """Add a new recipe to the database, with a version, ingredients, and steps."""
+        import datetime
+        recipe_id = recipe.id if hasattr(recipe, 'id') else str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
         db_recipe = DBRecipe(
-            recipe_id=recipe.id,
+            recipe_id=recipe_id,
             dish_name=recipe.title,
             servings=recipe.servings if recipe.servings is not None else 1,
             created_by=None,  # Set appropriately if available
             is_published=recipe.approved,
-            created_at=None  # Set appropriately if available
+            created_at=datetime.datetime.utcnow(),
+            current_version_id=version_id
         )
-        # Add ingredients
-        for ing in recipe.ingredients:
-            db_ing = DBIngredient(
-                ingredient_id=str(uuid.uuid4()),
-                version_id=None,  # Set appropriately if available
-                name=ing.name,
-                quantity=ing.quantity,
-                unit=ing.unit
-            )
-            db_recipe.ingredients.append(db_ing)
-        # Add steps
-        for idx, step_text in enumerate(recipe.steps):
-            db_step = DBStep(
-                step_id=str(uuid.uuid4()),
-                version_id=None,  # Set appropriately if available
-                step_order=idx,
-                instruction=step_text,
-                minutes=None
-            )
-            db_recipe.steps.append(db_step)
+        db_version = self._create_version(
+            version_id=version_id,
+            recipe_id=recipe_id,
+            submitted_by=None,  # Set appropriately if available
+            servings=recipe.servings,
+            ingredients=recipe.ingredients,
+            steps=recipe.steps
+        )
+        db_recipe.versions.append(db_version)
         self.db.add(db_recipe)
         self.db.commit()
         self.db.refresh(db_recipe)
@@ -211,7 +215,7 @@ class PostgresRecipeRepository:
                 user_id = getattr(rating_obj, 'user_id', None)
                 rating_value = getattr(rating_obj, 'rating', None)
                 if user_id and rating_value is not None:
-                    feedback = self.db.query(Feedback).filter(Feedback.recipe_id == recipe.id, Feedback.user_id == user_id).first()
+                    feedback = self.db.query(Feedback).filter(Feedback.version_id == recipe.current_version_id, Feedback.user_id == user_id).first()
                     if feedback:
                         feedback.rating = rating_value
                     else:
@@ -226,7 +230,7 @@ class PostgresRecipeRepository:
                         )
                         self.db.add(feedback)
         # Recalculate avg_rating
-        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == recipe.id, Feedback.rating != None).all()
+        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == recipe.current_version_id, Feedback.rating != None).all()
         if feedbacks:
             avg_rating = sum(f.rating for f in feedbacks) / len(feedbacks)
         else:
@@ -282,7 +286,7 @@ class PostgresRecipeRepository:
             servings = 1
         # Fetch ratings from Feedback table
         from Module.database import Feedback
-        feedbacks = self.db.query(Feedback).filter(Feedback.recipe_id == getattr(db_recipe, 'recipe_id', None), Feedback.rating != None).all()
+        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == getattr(db_recipe, 'current_version_id', None), Feedback.rating != None).all()
         ratings = [f.rating for f in feedbacks]
         model = RecipeModel(
             id=getattr(db_recipe, 'recipe_id', None),
