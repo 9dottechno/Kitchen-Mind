@@ -330,7 +330,7 @@ class RecipeResponse(BaseModel):
     servings: int
     approved: bool
     popularity: int
-    avg_rating: float
+    # avg_rating removed from model
     ingredients: list = []
     steps: list = []
 
@@ -685,7 +685,7 @@ def submit_recipe(
             servings=recipe_obj.servings,
             approved=recipe_obj.approved,
             popularity=getattr(recipe_obj, 'popularity', 0),
-            avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0,
+            # avg_rating removed from response
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
             steps=getattr(recipe_obj, 'steps', [])
         )
@@ -718,7 +718,7 @@ def list_recipes(
             servings=r.servings,
             approved=r.approved,
             popularity=getattr(r, "popularity", 0),
-            avg_rating=r.avg_rating() if hasattr(r, "avg_rating") else 0.0,
+            # avg_rating removed from response
             ingredients=[i for i in getattr(r, 'ingredients', [])],
             steps=[s for s in getattr(r, 'steps', [])]
         ))
@@ -778,7 +778,8 @@ def synthesize_recipe(
                 ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
                 steps=result.steps,
                 servings=result.servings,
-                submitted_by=user.user_id
+                submitted_by=user.user_id,
+                approved=getattr(result, 'approved', False)
             )
             print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
             print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
@@ -795,7 +796,7 @@ def synthesize_recipe(
                 servings=recipe_obj.servings,
                 approved=recipe_obj.approved,
                 popularity=getattr(recipe_obj, 'popularity', 0),
-                avg_rating=recipe_obj.avg_rating() if hasattr(recipe_obj, 'avg_rating') else 0.0,
+                # avg_rating removed from response
                 ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
                 steps=getattr(recipe_obj, 'steps', [])
             )
@@ -900,7 +901,6 @@ def ai_review_recipe(version_id: str, db: Session = Depends(get_db)):
             self.ingredients = version.ingredients
             self.steps = version.steps
         def avg_rating(self):
-            # Optionally, implement average rating logic if needed
             return 0.0
     mock_recipe = MockRecipe(recipe, version)
     ai_scores = {
@@ -945,7 +945,7 @@ def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db))
     # Fetch scores from recipe_scores table if available
     from Module.database import RecipeScore
     score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe.recipe_id).first()
-    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else (version.avg_rating if hasattr(version, "avg_rating") else 0.0)
+    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else 0.0
     popularity = score.popularity_score if score and score.popularity_score is not None else getattr(recipe, "popularity", 0)
     response = RecipeResponse(
         recipe_id=recipe.recipe_id,
@@ -954,7 +954,7 @@ def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db))
         servings=version.base_servings if hasattr(version, 'base_servings') and version.base_servings else getattr(recipe, 'servings', 1),
         approved=approved,
         popularity=popularity,
-        avg_rating=avg_rating,
+        # avg_rating removed from response
         ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(version, 'ingredients', [])],
         steps=[step.instruction for step in sorted(getattr(version, 'steps', []), key=lambda x: x.step_order)]
     )
@@ -998,16 +998,14 @@ def rate_recipe(
     update_recipe_score(db, recipe_id)
     # Fetch updated scores
     score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
-    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else (version.avg_rating if hasattr(version, "avg_rating") else 0.0)
-    popularity = score.popularity_score if score and score.popularity_score is not None else None
+    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else 0.0
     return {
         "recipe_id": recipe_id,
         "version_id": version_id,
         "title": version.recipe.dish_name if version.recipe else None,
         "servings": version.base_servings if hasattr(version, 'base_servings') and version.base_servings else None,
         "approved": version.recipe.is_published if version.recipe else None,
-        "popularity": popularity,
-        "avg_rating": avg_rating,
+        "avg_rating": round(avg_rating, 2),
         "comment": feedback.comment
     }
 

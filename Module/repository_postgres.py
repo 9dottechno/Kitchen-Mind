@@ -9,6 +9,18 @@ from Module.models import Recipe as RecipeModel, Ingredient
 
 
 class PostgresRecipeRepository:
+    def find_draft(self, title: str, servings: int, created_by: str):
+        """Find a draft (unpublished) recipe by title, servings, and created_by."""
+        db_recipe = self.db.query(self.model).filter(
+            self.model.dish_name == title,
+            self.model.servings == servings,
+            self.model.created_by == created_by,
+            self.model.is_published == False
+        ).first()
+        if db_recipe:
+            return self._to_model(db_recipe)
+        return None
+
     @staticmethod
     def extract_minutes(instruction):
         import re
@@ -28,6 +40,9 @@ class PostgresRecipeRepository:
         """Add or update a user's rating and comment for a recipe version in the Feedback table."""
         from Module.database import Feedback
         from datetime import datetime
+        # Enforce rating must be between 0 and 5
+        if not (0 <= rating <= 5):
+            raise ValueError("Rating must be between 0 and 5.")
         feedback = self.db.query(Feedback).filter(Feedback.version_id == version_id, Feedback.user_id == user_id).first()
         if feedback:
             feedback.rating = rating
@@ -53,11 +68,17 @@ class PostgresRecipeRepository:
         """Get all ratings for a recipe version from the Feedback table."""
         from Module.database import Feedback
         feedbacks = self.db.query(Feedback).filter(Feedback.version_id == version_id).all()
-        return [fb.rating for fb in feedbacks if fb.rating is not None]
+        return [min(max(fb.rating, 0), 5) for fb in feedbacks if fb.rating is not None]
 
-    def create_recipe(self, title, ingredients, steps, servings, submitted_by=None):
-        """Create and persist a new recipe, returning the Recipe model with id."""
-        print(f"[DEBUG] create_recipe called with title={title}, servings={servings}, submitted_by={submitted_by}")
+    def create_recipe(self, title, ingredients, steps, servings, submitted_by=None, approved=False):
+        """Create and persist a new recipe, returning the Recipe model with id. Prevent duplicate drafts."""
+        print(f"[DEBUG] create_recipe called with title={title}, servings={servings}, submitted_by={submitted_by}, approved={approved}")
+        # If this is a draft (not approved/published), check for existing draft
+        if not approved:
+            existing_draft = self.find_draft(title, servings, submitted_by)
+            if existing_draft:
+                print(f"[DEBUG] Existing draft found, returning it: id={getattr(existing_draft, 'id', None)}")
+                return existing_draft
         import datetime
         recipe_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
@@ -66,7 +87,7 @@ class PostgresRecipeRepository:
             dish_name=title,
             servings=servings if servings is not None else 1,
             created_by=submitted_by,
-            is_published=False,
+            is_published=approved,
             created_at=datetime.datetime.utcnow(),
             current_version_id=version_id
         )
@@ -95,7 +116,7 @@ class PostgresRecipeRepository:
             status="submitted",
             validator_confidence=0.0,
             base_servings=servings,
-            avg_rating=0.0
+            # avg_rating removed from RecipeVersion (field deleted)
         )
         # Ensure all ingredients are Ingredient objects
         from Module.models import Ingredient as IngredientModel
@@ -134,14 +155,30 @@ class PostgresRecipeRepository:
     
     def add(self, recipe: RecipeModel):
         """Add a new recipe to the database, with a version, ingredients, and steps."""
+        print(f"[DEBUG] PostgresRecipeRepository.add: Adding recipe with id={getattr(recipe, 'id', None)}, title={getattr(recipe, 'title', None)}, approved={getattr(recipe, 'approved', None)}")
         import datetime
         recipe_id = recipe.id if hasattr(recipe, 'id') else str(uuid.uuid4())
         version_id = str(uuid.uuid4())
+        created_by = getattr(recipe, 'created_by', None)
+        if not created_by:
+            created_by = recipe.metadata.get('submitted_by_id') if hasattr(recipe, 'metadata') else None
+
+        # Duplicate check before insert
+        existing = self.db.query(DBRecipe).filter(
+            DBRecipe.dish_name == recipe.title,
+            DBRecipe.servings == (recipe.servings if recipe.servings is not None else 1),
+            DBRecipe.created_by == created_by,
+            DBRecipe.is_published == recipe.approved
+        ).first()
+        if existing:
+            print(f"[DEBUG] Duplicate recipe detected: id={existing.recipe_id}, title={existing.dish_name}, servings={existing.servings}, created_by={existing.created_by}, is_published={existing.is_published}")
+            return self._to_model(existing)
+
         db_recipe = DBRecipe(
             recipe_id=recipe_id,
             dish_name=recipe.title,
             servings=recipe.servings if recipe.servings is not None else 1,
-            created_by=None,  # Set appropriately if available
+            created_by=created_by,
             is_published=recipe.approved,
             created_at=datetime.datetime.utcnow(),
             current_version_id=version_id
@@ -149,16 +186,18 @@ class PostgresRecipeRepository:
         db_version = self._create_version(
             version_id=version_id,
             recipe_id=recipe_id,
-            submitted_by=None,  # Set appropriately if available
+            submitted_by=created_by,
             servings=recipe.servings,
             ingredients=recipe.ingredients,
             steps=recipe.steps
         )
         db_recipe.versions.append(db_version)
+        print(f"[DEBUG] PostgresRecipeRepository.add: DBRecipe before add: recipe_id={db_recipe.recipe_id}, is_published={db_recipe.is_published}, created_by={db_recipe.created_by}")
         self.db.add(db_recipe)
         self.db.commit()
         self.db.refresh(db_recipe)
-    
+        print(f"[DEBUG] PostgresRecipeRepository.add: DBRecipe after add: recipe_id={db_recipe.recipe_id}, is_published={db_recipe.is_published}, created_by={db_recipe.created_by}")
+
     def get(self, recipe_id: str) -> Optional[RecipeModel]:
         """Get a recipe by ID."""
         print(f"[DEBUG] get() called with recipe_id: {recipe_id}")
@@ -198,14 +237,19 @@ class PostgresRecipeRepository:
         return models
     
     def update(self, recipe: RecipeModel):
-        """Update an existing recipe."""
+        print(f"[DEBUG] PostgresRecipeRepository.update: Updating recipe with id={getattr(recipe, 'id', None)}, approved={getattr(recipe, 'approved', None)}")
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe.id).first()
+        print(f"[DEBUG] PostgresRecipeRepository.update: DBRecipe before update: {db_recipe}")
         if not db_recipe:
+            print(f"[DEBUG] PostgresRecipeRepository.update: Recipe {recipe.id} not found in DB!")
             raise ValueError(f"Recipe {recipe.id} not found")
 
         db_recipe.dish_name = recipe.title
         db_recipe.servings = recipe.servings
-        db_recipe.is_published = recipe.approved
+        # Only set is_published to True if recipe.approved is True
+        if recipe.approved:
+            db_recipe.is_published = True
+        print(f"[DEBUG] PostgresRecipeRepository.update: DBRecipe after field update: recipe_id={db_recipe.recipe_id}, is_published={db_recipe.is_published}, created_by={db_recipe.created_by}")
 
         # Persist ratings using Feedback table
         from Module.database import Feedback
@@ -215,6 +259,8 @@ class PostgresRecipeRepository:
                 user_id = getattr(rating_obj, 'user_id', None)
                 rating_value = getattr(rating_obj, 'rating', None)
                 if user_id and rating_value is not None:
+                    # Ensure rating is within 0-5
+                    rating_value = min(max(rating_value, 0), 5)
                     feedback = self.db.query(Feedback).filter(Feedback.version_id == recipe.current_version_id, Feedback.user_id == user_id).first()
                     if feedback:
                         feedback.rating = rating_value
@@ -229,20 +275,11 @@ class PostgresRecipeRepository:
                             comment=None
                         )
                         self.db.add(feedback)
-        # Recalculate avg_rating
-        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == recipe.current_version_id, Feedback.rating != None).all()
-        if feedbacks:
-            avg_rating = sum(f.rating for f in feedbacks) / len(feedbacks)
-        else:
-            avg_rating = 0.0
-        # If RecipeVersion exists, update avg_rating
-        from Module.database import RecipeVersion
-        version = self.db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe.id).first()
-        if version:
-            version.avg_rating = avg_rating
+        # Recalculate avg_rating logic removed (field deleted)
 
         self.db.commit()
         self.db.refresh(db_recipe)
+        print(f"[DEBUG] PostgresRecipeRepository.update: DBRecipe after commit: recipe_id={db_recipe.recipe_id}, is_published={db_recipe.is_published}, created_by={db_recipe.created_by}")
     
     def delete(self, recipe_id: str):
         """Delete a recipe by ID."""
@@ -284,10 +321,11 @@ class PostgresRecipeRepository:
         print(f"[DEBUG] _to_model steps: {steps}")
         if servings is None:
             servings = 1
-        # Fetch ratings from Feedback table
+        # Fetch ratings from Feedback table and ensure 0-5 limit
         from Module.database import Feedback
         feedbacks = self.db.query(Feedback).filter(Feedback.version_id == getattr(db_recipe, 'current_version_id', None), Feedback.rating != None).all()
-        ratings = [f.rating for f in feedbacks]
+        safe_ratings = [min(max(f.rating, 0), 5) for f in feedbacks]
+        avg_rating = round(sum(safe_ratings) / len(safe_ratings), 2) if safe_ratings else 0.0
         model = RecipeModel(
             id=getattr(db_recipe, 'recipe_id', None),
             title=db_recipe.dish_name,
@@ -295,7 +333,7 @@ class PostgresRecipeRepository:
             steps=steps,
             servings=servings,
             metadata={},
-            ratings=ratings,
+            ratings=safe_ratings,
             validator_confidence=0.0,
             popularity=0,
             approved=db_recipe.is_published

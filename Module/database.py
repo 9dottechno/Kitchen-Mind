@@ -20,12 +20,20 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None):
     except Exception:
         avg_rating = 0.0
 
+
+    # 2. Get latest version for this recipe
+    from sqlalchemy import desc
+    latest_version = db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe_id).order_by(desc(RecipeVersion.submitted_at)).first()
+    latest_version_id = latest_version.version_id if latest_version else None
+
     # 2. Get or create RecipeScore
     score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
     if not score:
         import uuid
-        score = RecipeScore(score_id=str(uuid.uuid4()), recipe_id=recipe_id)
+        score = RecipeScore(score_id=str(uuid.uuid4()), recipe_id=recipe_id, version_id=latest_version_id)
         db.add(score)
+    else:
+        score.version_id = latest_version_id
 
     # 3. Set scores
     score.user_rating_score = avg_rating
@@ -58,19 +66,17 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None):
     score.calculated_at = datetime.utcnow()
     db.commit()
     db.refresh(score)
-    # --- Sync validator_confidence and avg_rating to RecipeVersion ---
-    from sqlalchemy import desc
-    version = db.query(RecipeVersion).filter(RecipeVersion.recipe_id == recipe_id).order_by(desc(RecipeVersion.submitted_at)).first()
-    if version:
-        version.validator_confidence = score.validator_confidence_score
-        version.avg_rating = score.user_rating_score
+    # --- Sync validator_confidence to RecipeVersion ---
+    if latest_version:
+        latest_version.validator_confidence = score.validator_confidence_score
         db.commit()
-        db.refresh(version)
+        db.refresh(latest_version)
     return score
 """
 SQLAlchemy database setup and ORM models for KitchenMind.
 """
 
+import sqlalchemy as sa
 from sqlalchemy import (
     create_engine, Column, String, Integer, Float, Boolean, DateTime, Text, Enum, ForeignKey
 )
@@ -126,14 +132,14 @@ class User(Base):
     password_hash = Column(String)
     auth_type = Column(String)
     otp_hash = Column(String)
-    otp_expires_at = Column(DateTime)
+    otp_expires_at = Column(DateTime(timezone=True))
     otp_verified = Column(Boolean, default=False)
     role_id = Column(String, ForeignKey("roles.role_id"))
     dietary_preference = Column(Enum(DietaryPreferenceEnum))
     rating_score = Column(Float, default=0.0)
     credit = Column(Float, default=0.0)
-    created_at = Column(DateTime)
-    last_login_at = Column(DateTime)
+    created_at = Column(DateTime(timezone=True))
+    last_login_at = Column(DateTime(timezone=True))
     role = relationship("Role", back_populates="user")
     is_super_admin = Column(Boolean, default=False)
     created_by = Column(String)  # user_id of creator (admin)
@@ -141,7 +147,7 @@ class User(Base):
     admin_action_target_type = Column(String)  # last admin action target type
     admin_action_target_id = Column(String)  # last admin action target id
     admin_action_description = Column(Text)  # last admin action description
-    admin_action_created_at = Column(DateTime)  # last admin action timestamp
+    admin_action_created_at = Column(DateTime(timezone=True))  # last admin action timestamp
     sessions = relationship("Session", back_populates="user")
     feedbacks = relationship("Feedback", back_populates="user")
     point_logs = relationship("PointLog", back_populates="user")
@@ -154,8 +160,8 @@ class Session(Base):
     __tablename__ = "sessions"
     session_id = Column(String, primary_key=True)
     user_id = Column(String, ForeignKey("user.user_id"))
-    created_at = Column(DateTime)
-    expires_at = Column(DateTime)
+    created_at = Column(DateTime(timezone=True))
+    expires_at = Column(DateTime(timezone=True))
     is_active = Column(Boolean, default=True)
     ip_address = Column(String)
     user_agent = Column(String)
@@ -164,13 +170,19 @@ class Session(Base):
 
 class Recipe(Base):
     __tablename__ = "recipes"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "dish_name", "servings", "created_by", "is_published",
+            name="uq_recipe_dish_servings_creator_published"
+        ),
+    )
     recipe_id = Column(String, primary_key=True)
     dish_name = Column(String)
     servings = Column(Integer, nullable=False, default=1)
     current_version_id = Column(String, nullable=True)  # Removed FK to break circular dependency
     created_by = Column(String, ForeignKey("user.user_id"))
     is_published = Column(Boolean, default=False)
-    created_at = Column(DateTime)
+    created_at = Column(DateTime(timezone=True))
     creator = relationship("User", back_populates="recipes")
     versions = relationship("RecipeVersion", back_populates="recipe")
     # feedbacks relationship removed; now on RecipeVersion
@@ -182,11 +194,10 @@ class RecipeVersion(Base):
     version_id = Column(String, primary_key=True)
     recipe_id = Column(String, ForeignKey("recipes.recipe_id"))
     submitted_by = Column(String, ForeignKey("user.user_id"))
-    submitted_at = Column(DateTime)
+    submitted_at = Column(DateTime(timezone=True))
     status = Column(String)
     validator_confidence = Column(Float)
     base_servings = Column(Integer)
-    avg_rating = Column(Float)
     recipe = relationship("Recipe", back_populates="versions")
     ingredients = relationship("Ingredient", back_populates="version")
     steps = relationship("Step", back_populates="version")
@@ -215,7 +226,7 @@ class Validation(Base):
     __tablename__ = "validations"
     validation_id = Column(String, primary_key=True)
     version_id = Column(String, ForeignKey("recipe_versions.version_id"))
-    validated_at = Column(DateTime)
+    validated_at = Column(DateTime(timezone=True))
     approved = Column(Boolean)
     feedback = Column(Text)
     version = relationship("RecipeVersion", back_populates="validations")
@@ -225,12 +236,12 @@ class Feedback(Base):
     feedback_id = Column(String, primary_key=True)
     version_id = Column(String, ForeignKey("recipe_versions.version_id"))
     user_id = Column(String, ForeignKey("user.user_id"))
-    created_at = Column(DateTime)
+    created_at = Column(DateTime(timezone=True))
     rating = Column(Integer)
     comment = Column(Text)
     flagged = Column(Boolean, default=False)
     is_revised = Column(Boolean, default=False)
-    revised_at = Column(DateTime)
+    revised_at = Column(DateTime(timezone=True))
     version = relationship("RecipeVersion", back_populates="feedbacks")
     user = relationship("User", back_populates="feedbacks")
 
@@ -239,7 +250,7 @@ class TokenTransaction(Base):
     tx_id = Column(String, primary_key=True)
     user_id = Column(String, ForeignKey("user.user_id"))
     recipe_id = Column(String, ForeignKey("recipes.recipe_id"))
-    date = Column(DateTime)
+    date = Column(DateTime(timezone=True))
     tokens = Column(Float)
     reason = Column(String)
     related_id = Column(String)
@@ -253,13 +264,15 @@ class PointLog(Base):
     activity_type = Column(String)
     quantity = Column(Integer)
     points = Column(Integer)
-    created_at = Column(DateTime)
+    created_at = Column(DateTime(timezone=True))
     user = relationship("User", back_populates="point_logs")
 
 class RecipeScore(Base):
+
     __tablename__ = "recipe_scores"
     score_id = Column(String, primary_key=True)
     recipe_id = Column(String, ForeignKey("recipes.recipe_id"))
+    version_id = Column(String, ForeignKey("recipe_versions.version_id"), nullable=True)
     user_rating_score = Column(Float)
     validator_confidence_score = Column(Float)
     ingredient_authenticity_score = Column(Float)
@@ -267,8 +280,9 @@ class RecipeScore(Base):
     popularity_score = Column(Float)
     ai_confidence_score = Column(Float)
     final_score = Column(Float)
-    calculated_at = Column(DateTime)
+    calculated_at = Column(DateTime(timezone=True))
     recipe = relationship("Recipe", back_populates="recipe_score")
+    version = relationship("RecipeVersion")
 
 
 
@@ -276,7 +290,7 @@ class EventPlan(Base):
     __tablename__ = "event_plans"
     event_id = Column(String, primary_key=True)
     user_id = Column(String, ForeignKey("user.user_id"))
-    event_date = Column(DateTime)
+    event_date = Column(DateTime(timezone=True))
     guest_count = Column(Integer)
     budget = Column(Float)
     preferences = Column(Text)

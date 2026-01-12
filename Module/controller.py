@@ -134,19 +134,13 @@ class KitchenMind:
         return recipe
 
     def validate_recipe(self, admin: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
-        """Validate a recipe with confidence scoring and auto-approval at 90%+ confidence. Only admins can validate."""
-        print(f"[DEBUG] validate_recipe called with admin={admin}, recipe_id={recipe_id}, approved={approved}, feedback={feedback}, confidence={confidence}")
+        print(f"[DEBUG] validate_recipe: admin={admin}, recipe_id={recipe_id}, approved={approved}, feedback={feedback}, confidence={confidence}")
         if admin.role != 'admin':
             raise PermissionError('Only admins can validate recipes.')
         r = self.recipes.get(recipe_id)
-        print(f"[DEBUG] Retrieved recipe: {r}")
-        print(f"[DEBUG] Recipe type: {type(r)}")
-        if r is None:
-            raise KeyError(f'Recipe "{recipe_id}" not found')
-        # Ensure r is a dataclass Recipe (not ORM)
+        print(f"[DEBUG] validate_recipe: loaded recipe: {r}")
         from .models import Recipe as RecipeModel
         if not isinstance(r, RecipeModel):
-            # Convert ORM or dict to dataclass Recipe
             r = RecipeModel(
                 id=getattr(r, 'id', getattr(r, 'recipe_id', None)),
                 title=getattr(r, 'title', getattr(r, 'dish_name', '')),
@@ -161,34 +155,24 @@ class KitchenMind:
                 rejection_suggestions=getattr(r, 'rejection_suggestions', [])
             )
             print(f"[DEBUG] Converted recipe to dataclass: {r}")
-        # Normalize leavening ingredients
         print(f"[DEBUG] Normalizing leavening ingredients for: {getattr(r, 'ingredients', None)}")
         r.ingredients = self.synth.normalize_leavening(r.ingredients)
-        # Validate and normalize confidence score (0.0 to 1.0)
         r.validator_confidence = max(0.0, min(1.0, confidence))
         print(f"[DEBUG] Set validator_confidence: {r.validator_confidence}")
-        # Add validator metadata
         r.metadata['validated_by'] = admin.username
         r.metadata['validated_by_id'] = admin.id
         r.metadata['confidence_score'] = r.validator_confidence
-        # Auto-approve if confidence >= 0.9
-        if r.validator_confidence >= 0.9:
+        if r.validator_confidence >= 0.9 or approved:
             r.approved = True
             r.popularity += 1
             self.vstore.index(r)
-            r.metadata['validation_feedback'] = feedback or 'Auto-approved with high confidence (≥90%)'
-            r.metadata['auto_approved'] = True
-            print(f"✓ Recipe '{r.title}' AUTO-APPROVED (confidence: {r.validator_confidence:.1%})")
-        elif approved:
-            # Manual approval (confidence < 90%)
-            r.approved = True
-            r.popularity += 1
-            self.vstore.index(r)
-            r.metadata['validation_feedback'] = feedback or 'Manually approved'
-            r.metadata['auto_approved'] = False
-            print(f"✓ Recipe '{r.title}' MANUALLY APPROVED (confidence: {r.validator_confidence:.1%})")
+            r.metadata['validation_feedback'] = feedback or (
+                'Auto-approved with high confidence (≥90%)' if r.validator_confidence >= 0.9 else 'Manually approved')
+            r.metadata['auto_approved'] = r.validator_confidence >= 0.9
+            print(f"[DEBUG] validate_recipe: calling update on recipe: {r}")
+            self.recipes.update(r)
+            print(f"[DEBUG] validate_recipe: update complete for recipe: {r.id}")
         else:
-            # Rejected - generate AI suggestions for trainer
             r.approved = False
             r.metadata['validation_feedback'] = feedback
             r.metadata['auto_approved'] = False
@@ -197,9 +181,7 @@ class KitchenMind:
             r.metadata['rejection_reason'] = feedback or "Does not meet quality standards"
             print(f"✗ Recipe '{r.title}' REJECTED (confidence: {r.validator_confidence:.1%})")
             print(f"  Suggestions sent to trainer for improvement")
-        # Reward admin for validation
         self.tokens.reward_validator(admin, amount=0.5)
-        # --- Save AI scores to recipe_scores table ---
         from .database import update_recipe_score
         ai_scores = {
             'validator_confidence_score': r.validator_confidence,
@@ -287,7 +269,25 @@ class KitchenMind:
         if servings <= 0:
             raise ValueError("Servings must be positive")
 
-        # ...existing code...
+        # Check for existing synthesized recipe to prevent duplicates
+        synthesized_title = f"Synthesized -- {dish_name} (for {servings} servings)"
+        print(f"[DEBUG] synthesized_title: '{synthesized_title}', servings: {servings}, created_by: {getattr(user, 'user_id', None)}")
+        # Try to find a draft for this user
+        draft = None
+        if hasattr(user, 'user_id'):
+            draft = self.recipes.find_draft(synthesized_title, servings, user.user_id)
+            print(f"[DEBUG] find_draft result: {draft}")
+        if draft:
+            print(f"[DEBUG] Returning existing draft synthesized recipe: {draft.id}")
+            return draft
+        # Fallback: check for any published with same title (should not create duplicate, but for safety)
+        found_by_title = self.recipes.find_by_title(synthesized_title)
+        print(f"[DEBUG] find_by_title results: {[getattr(r, 'id', None) for r in found_by_title]}")
+        existing = [r for r in found_by_title if getattr(r, 'title', '').lower() == synthesized_title.lower()]
+        print(f"[DEBUG] filtered existing synthesized recipes: {[getattr(r, 'id', None) for r in existing]}")
+        if existing:
+            print(f"[DEBUG] Returning existing synthesized recipe: {existing[0].id}")
+            return existing[0]
 
         # If custom ingredients are provided, synthesize directly
         if ingredients is not None:
@@ -298,7 +298,7 @@ class KitchenMind:
                 ingredients=ingredients,
                 steps=steps if steps is not None else [],
                 servings=servings,
-                metadata={},
+                metadata={'submitted_by_id': getattr(user, 'user_id', None)},
                 ratings=[],
                 validator_confidence=0.0,
                 popularity=0,
@@ -307,7 +307,8 @@ class KitchenMind:
             )
             synthesized = self.synth.synthesize([custom_recipe], servings, reorder=reorder)
             synthesized = ensure_recipe_dataclass(synthesized)
-            print(f"[DEBUG] After synthesize: type={type(synthesized)}, dir={dir(synthesized)}, repr={repr(synthesized)}")
+            synthesized.approved = False
+            synthesized.metadata['submitted_by_id'] = getattr(user, 'user_id', None)
             self.recipes.add(synthesized)
             self.vstore.index(synthesized)
             self.tokens.reward_user_request(user, amount=0.25)
@@ -347,6 +348,8 @@ class KitchenMind:
         top_n = [r for r, _ in scored[:2]]
         synthesized = self.synth.synthesize(top_n, servings, reorder=reorder)
         synthesized = ensure_recipe_dataclass(synthesized)
+        synthesized.approved = False
+        synthesized.metadata['submitted_by_id'] = getattr(user, 'user_id', None)
         self.recipes.add(synthesized)
         self.vstore.index(synthesized)
         self.tokens.reward_user_request(user, amount=0.25)
