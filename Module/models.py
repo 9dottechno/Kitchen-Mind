@@ -52,9 +52,14 @@ class Recipe:
 @dataclass
 
 @dataclass
+
 class User:
     id: str
-    username: str
+    first_name: str
+    last_name: str
+    email: str
+    phone_number: str
+    password: str
     role: str = "user"  # user, trainer, admin
     rmdt_balance: float = 0.0
 

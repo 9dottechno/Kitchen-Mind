@@ -504,6 +504,86 @@ def run_all_tests():
     print(f"{'='*50}{RESET}\n")
     results = {}
 
+
+    # Test registration (no OTP), login (with OTP), and public recipe search
+    reg_data = test_register_user()
+    results["register_user"] = reg_data is not None
+
+    login_data = test_login_user()
+    login_otp = input("Enter OTP for login (see server log): ") if login_data else None
+    login_result = test_verify_otp(login_data["email"], login_otp) if login_data and login_otp else None
+    results["login_user"] = login_result is not None
+
+    public_recipes = test_public_recipe_search()
+    results["public_recipe_search"] = public_recipes is not None
+
+def test_register_user():
+    """Test user registration with OTP."""
+    print_test("Register User (no OTP required)")
+    reg_data = {
+        "first_name": "Test",
+        "last_name": "User",
+        "email": "testuser_otp@example.com",
+        "phone_number": "1234567890",
+        "password": "testpass123",
+        "role": "trainer"
+    }
+    resp = requests.post(f"{BASE_URL}/register", json=reg_data)
+    if resp.status_code == 201:
+        print_success("Registration complete, user created (no OTP required)")
+        return reg_data
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
+def test_login_user():
+    """Test login with OTP."""
+    print_test("Login User (with OTP)")
+    login_data = {
+        "email": "testuser_otp@example.com",
+        "password": "testpass123"
+    }
+    resp = requests.post(f"{BASE_URL}/login", json=login_data)
+    if resp.status_code == 200:
+        print_success("Login OTP sent")
+        return login_data
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
+def test_verify_otp(email, otp):
+    """Test OTP verification for registration or login."""
+    print_test("Verify OTP")
+    data = {"email": email, "otp": otp}
+    resp = requests.post(f"{BASE_URL}/verify-otp", json=data)
+    if resp.status_code == 200:
+        result = resp.json()
+        if result.get("user_id"):
+            print_success("OTP verified, user authenticated")
+            return result
+        else:
+            print_error(f"OTP verification failed: {result.get('message')}")
+            return None
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
+def test_public_recipe_search():
+    """Test public recipe search (no login required)."""
+    print_test("Public Recipe Search (no login)")
+    resp = requests.get(f"{BASE_URL}/public/recipes")
+    if resp.status_code == 200:
+        recipes = resp.json()
+        print_success(f"Fetched {len(recipes)} public recipes")
+        return recipes
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
     # Health check
     results["health_check"] = test_health_check()
 

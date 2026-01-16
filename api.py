@@ -1,11 +1,178 @@
+
+from fastapi import FastAPI, Depends
+from typing import List
+from flask import request
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from Module.database import get_db, init_db, Recipe, Role, User
+from Module.database import DietaryPreferenceEnum
+import hashlib
+
+app = FastAPI()
+STATIC_OTP = "123456"
+
+class RecipeResponse(BaseModel):
+    """Schema for recipe response."""
+    recipe_id: str
+    version_id: str = None
+    title: str
+    servings: int
+    approved: bool
+    popularity: int
+    ingredients: list = []
+    steps: list = []
+
+
+
+# Public recipe search endpoint (no login required, returns up to 2 recipes)
+@app.get("/public/recipes", response_model=List[RecipeResponse])
+def public_recipes(db: Session = Depends(get_db)):
+    recipes = db.query(Recipe).filter(Recipe.is_published == True).limit(2).all()
+    result = []
+    for r in recipes:
+        result.append(RecipeResponse(
+            recipe_id=r.recipe_id,
+            version_id=getattr(r, 'current_version_id', None),
+            title=getattr(r, 'title', getattr(r, 'dish_name', None)),
+            servings=r.servings,
+            approved=getattr(r, 'is_published', False),
+            popularity=getattr(r, 'popularity', 0),
+            ingredients=[{'name': ing.name, 'quantity': ing.quantity, 'unit': ing.unit} for ing in getattr(r, 'ingredients', [])],
+            steps=getattr(r, 'steps', [])
+        ))
+    return result
+# Login request/response schemas
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginResponse(BaseModel):
+    email: str
+    message: str
+
+# Login endpoint with OTP
+@app.post("/login", response_model=LoginResponse)
+def login_user(request: LoginRequest, db: Session = Depends(get_db)):
+    # Find user by email
+    db_user = db.query(User).filter(User.email == request.email).first()
+    password_hash = hashlib.sha256(request.password.encode()).hexdigest()
+    if not db_user or db_user.password_hash != password_hash:
+        return LoginResponse(email=request.email, message="Invalid email or password.")
+    # Store OTP and expiry in DB
+    from datetime import datetime, timedelta
+    db_user.otp_hash = hashlib.sha256(STATIC_OTP.encode()).hexdigest()
+    db_user.otp_expires_at = datetime.utcnow() + timedelta(days=60)
+    db_user.otp_verified = False
+    db.commit()
+    print(f"[OTP] For login {request.email}: {STATIC_OTP}")
+    return LoginResponse(email=request.email, message="OTP sent to your email. Please verify.")
+from fastapi import status
+import random
+from typing import Optional
+# Temporary in-memory store for OTPs and pending users (for demo)
+# Registration request/response schemas
+class RegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    phone_number: str
+    password: str
+    role: str
+
+class RegisterResponse(BaseModel):
+    email: str
+    message: str
+
+class OTPVerifyRequest(BaseModel):
+    email: str
+    otp: str
+
+class OTPVerifyResponse(BaseModel):
+    data: dict
+    message: str
+    status: str
+    token: str
+
+# Registration endpoint (no OTP)
+@app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
+    # Check for duplicate email or phone
+    existing_user = db.query(User).filter(User.email == request.email).first()
+    if existing_user:
+        return RegisterResponse(email=request.email, message="User already exists.")
+    import uuid
+    from datetime import datetime
+    user_id = str(uuid.uuid4())
+    db_user = User(
+        user_id=user_id,
+        name=f"{request.first_name} {request.last_name}",
+        email=request.email,
+        login_identifier=request.email,
+        
+        password_hash=hashlib.sha256(request.password.encode()).hexdigest(),
+        auth_type="email",
+        role_id=request.role,
+        phone_number=request.phone_number,
+        dietary_preference=None,
+        rating_score=0.0,
+        credit=0.0,
+        created_at=datetime.utcnow(),
+        last_login_at=datetime.utcnow()
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return RegisterResponse(email=request.email, message="Registration complete. User created.")
+
+# OTP verification endpoint (login only)
+@app.post("/verify-otp", response_model=OTPVerifyResponse)
+def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == request.email).first()
+    otp_hash = hashlib.sha256(request.otp.encode()).hexdigest()
+    if not db_user or db_user.otp_hash != otp_hash:
+        return OTPVerifyResponse(
+            data={},
+            message="Invalid or expired OTP.",
+            status="fail",
+            token=""
+        )
+    from datetime import timezone
+    if db_user.otp_expires_at and db_user.otp_expires_at < datetime.now(timezone.utc):
+        return OTPVerifyResponse(
+            data={},
+            message="OTP expired.",
+            status="fail",
+            token=""
+        )
+    db_user.otp_verified = True
+    db.commit()
+    # Split name into first and last (if possible)
+    name_parts = db_user.name.split(" ", 1)
+    first_name = name_parts[0]
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    user_data = {
+        "user_id": db_user.user_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": db_user.email,
+        "phone_number": getattr(db_user, "phone_number", ""),
+        "role": db_user.role_id
+    }
+    # For now, token is blank. Replace with JWT or session token if needed.
+    return OTPVerifyResponse(
+        data=user_data,
+        message="Login successful. User verified.",
+        status="success",
+        token=""
+    )
+
+    #return OTPVerifyResponse(user_id="", first_name="", last_name="", email=request.email, phone_number="", role="", message="User not found.")
 from sqlalchemy.orm import Session
 # PATCH endpoint to update user fields (including admin_action_* fields)
 from fastapi import Body, Depends
 from typing import Any
 from pydantic import BaseModel
-from fastapi import FastAPI
 
-app = FastAPI()
 
 class UserUpdate(BaseModel):
     name: str = None
