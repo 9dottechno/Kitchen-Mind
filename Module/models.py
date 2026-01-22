@@ -25,6 +25,7 @@ class Recipe:
     validator_confidence: float = 0.0
     popularity: int = 0
     approved: bool = False
+    rejection_suggestions: List[str] = field(default_factory=list)
 
     def scale(self, target_servings: int) -> "Recipe":
         if self.servings <= 0:
@@ -47,11 +48,19 @@ class Recipe:
     def avg_rating(self) -> float:
         return statistics.mean(self.ratings) if self.ratings else 0.0
 
+
 @dataclass
+
+@dataclass
+
 class User:
     id: str
-    username: str
-    role: str = "user"  # user, trainer, validator, admin
+    first_name: str
+    last_name: str
+    email: str
+    phone_number: str
+    password: str
+    role: str = "user"  # user, trainer, admin
     rmdt_balance: float = 0.0
 
     def credit(self, amount: float):
@@ -61,3 +70,21 @@ class User:
         if amount > self.rmdt_balance:
             raise ValueError("Insufficient RMDT balance")
         self.rmdt_balance -= amount
+
+
+# Admin profile dataclass
+@dataclass
+class AdminProfile:
+    admin_id: str
+    name: str
+    email: str
+    created_at: str
+
+# Admin action log dataclass
+@dataclass
+class AdminActionLog:
+    action_id: str
+    admin_id: str
+    action_type: str
+    timestamp: str
+    details: str

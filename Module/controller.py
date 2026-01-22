@@ -6,7 +6,74 @@ Orchestrates all components: recipes, users, synthesis, validation, etc.
 import uuid
 from typing import Dict, List, Optional
 from .models import User, Recipe, Ingredient
-from .repository import RecipeRepository
+
+# --- Robust Recipe dataclass conversion utility ---
+def ensure_recipe_dataclass(obj):
+    from .models import Recipe as RecipeModel
+    # Accepts RecipeModel, dict, or any object with attributes
+    if isinstance(obj, RecipeModel):
+        # Ensure all ingredients are Ingredient objects
+        from .models import Ingredient as IngredientModel
+        ingredients = [
+            ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+            for ing in getattr(obj, 'ingredients', [])
+        ]
+        obj.ingredients = ingredients
+        return obj
+    if isinstance(obj, dict):
+        from .models import Ingredient as IngredientModel
+        ingredients = obj.get('ingredients', [])
+        # Convert dicts to Ingredient objects if needed
+        ingredients = [
+            ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+            for ing in ingredients
+            if isinstance(ing, (dict, IngredientModel))
+        ]
+        steps = obj.get('steps', [])
+        return RecipeModel(
+            id=obj.get('id') or obj.get('recipe_id'),
+            title=obj.get('title') or obj.get('dish_name', ''),
+            ingredients=ingredients,
+            steps=steps if isinstance(steps, list) else [],
+            servings=obj.get('servings', 1),
+            metadata=obj.get('metadata', {}),
+            ratings=obj.get('ratings', []),
+            validator_confidence=obj.get('validator_confidence', 0.0),
+            popularity=obj.get('popularity', 0),
+            approved=obj.get('approved', False),
+            rejection_suggestions=obj.get('rejection_suggestions', [])
+        )
+    # Fallback for any object
+    from .models import Ingredient as IngredientModel
+    ingredients = getattr(obj, 'ingredients', None)
+    if ingredients is None or not isinstance(ingredients, list):
+        print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'ingredients'. Setting to empty list.")
+        ingredients = []
+    # Convert dicts to Ingredient objects if needed
+    ingredients = [
+        ing if isinstance(ing, IngredientModel) else IngredientModel(**ing)
+        for ing in ingredients
+        if isinstance(ing, (dict, IngredientModel))
+    ]
+    steps = getattr(obj, 'steps', None)
+    if steps is None or not isinstance(steps, list):
+        print(f"[DEBUG] WARNING: Recipe object {obj} missing or invalid 'steps'. Setting to empty list.")
+        steps = []
+    return RecipeModel(
+        id=getattr(obj, 'id', getattr(obj, 'recipe_id', None)),
+        title=getattr(obj, 'title', getattr(obj, 'dish_name', '')),
+        ingredients=ingredients,
+        steps=steps,
+        servings=getattr(obj, 'servings', 1),
+        metadata=getattr(obj, 'metadata', {}),
+        ratings=getattr(obj, 'ratings', []),
+        validator_confidence=getattr(obj, 'validator_confidence', 0.0),
+        popularity=getattr(obj, 'popularity', 0),
+        approved=getattr(obj, 'approved', False),
+        rejection_suggestions=getattr(obj, 'rejection_suggestions', [])
+    )
+from .repository_postgres import PostgresRecipeRepository
+from .database import SessionLocal
 from .vector_store import MockVectorStore
 from .scoring import ScoringEngine
 from .synthesizer import Synthesizer
@@ -15,8 +82,12 @@ from .event_planner import EventPlanner
 
 
 class KitchenMind:
-    def __init__(self):
-        self.recipes = RecipeRepository()
+    def __init__(self, recipe_repo=None, db_session=None):
+        # Always use PostgresRecipeRepository unless another is provided
+        if db_session is None:
+            db_session = SessionLocal()
+        self.db_session = db_session
+        self.recipes = recipe_repo if recipe_repo is not None else PostgresRecipeRepository(db_session)
         self.vstore = MockVectorStore()
         self.scorer = ScoringEngine()
         self.synth = Synthesizer()
@@ -24,80 +95,307 @@ class KitchenMind:
         self.users: Dict[str, User] = {}
 
     def create_user(self, username: str, role: str = 'user') -> User:
+        """Create a new user with specified role (user, trainer, admin)."""
+        if role not in ['user', 'trainer', 'admin']:
+            raise ValueError(f"Invalid role: {role}. Must be one of: user, trainer, admin")
         user = User(id=str(uuid.uuid4()), username=username, role=role)
-        self.users[user.id] = user
+        self.users[getattr(user, 'user_id', user.id)] = user
         return user
 
     def submit_recipe(self, trainer: User, title: str, ingredients: List[Dict], steps: List[str], servings: int) -> Recipe:
-        assert trainer.role in ('trainer','admin'), 'Only trainers or admins can submit recipes.'
+        """Submit a recipe for validation (trainer/admin only)."""
+        print(f"[DEBUG] submit_recipe called with trainer={trainer}, title={title}, ingredients={ingredients}, steps={steps}, servings={servings}")
+        if trainer.role not in ('trainer', 'admin'):
+            raise PermissionError('Only trainers or admins can submit recipes.')
+        if not title or title.strip() == "":
+            raise ValueError("Recipe title cannot be empty")
+        if not ingredients or len(ingredients) < 2:
+            raise ValueError("Recipe must have at least 2 ingredients")
+        if not steps or len(steps) < 1:
+            raise ValueError("Recipe must have at least 1 step")
+        if servings <= 0:
+            raise ValueError("Servings must be a positive number")
         recipe = Recipe(
             id=str(uuid.uuid4()),
             title=title,
             ingredients=[Ingredient(**ing) for ing in ingredients],
             steps=steps,
             servings=servings,
-            metadata={'submitted_by': trainer.username}
+            metadata={'submitted_by': trainer.username, 'submitted_by_id': trainer.id}
         )
+        print(f"[DEBUG] Created recipe object: {recipe}")
+        print(f"[DEBUG] Recipe type: {type(recipe)}")
         self.recipes.add(recipe)
+        print(f"[DEBUG] Added recipe to self.recipes")
         self.vstore.index(recipe)
+        print(f"[DEBUG] Indexed recipe in vstore")
         self.tokens.reward_trainer_submission(trainer, amount=1.0)
+        print(f"[DEBUG] Rewarded trainer for submission")
         return recipe
 
-    def validate_recipe(self, validator: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
-        assert validator.role in ('validator','admin'), 'Only validators or admins can validate.'
+    def validate_recipe(self, admin: User, recipe_id: str, approved: bool, feedback: Optional[str] = None, confidence: float = 0.8):
+        print(f"[DEBUG] validate_recipe: admin={admin}, recipe_id={recipe_id}, approved={approved}, feedback={feedback}, confidence={confidence}")
+        if admin.role != 'admin':
+            raise PermissionError('Only admins can validate recipes.')
         r = self.recipes.get(recipe_id)
-        if r is None:
-            raise KeyError('Recipe not found')
+        print(f"[DEBUG] validate_recipe: loaded recipe: {r}")
+        from .models import Recipe as RecipeModel
+        if not isinstance(r, RecipeModel):
+            r = RecipeModel(
+                id=getattr(r, 'id', getattr(r, 'recipe_id', None)),
+                title=getattr(r, 'title', getattr(r, 'dish_name', '')),
+                ingredients=getattr(r, 'ingredients', []),
+                steps=getattr(r, 'steps', []),
+                servings=getattr(r, 'servings', 1),
+                metadata=getattr(r, 'metadata', {}),
+                ratings=getattr(r, 'ratings', []),
+                validator_confidence=getattr(r, 'validator_confidence', 0.0),
+                popularity=getattr(r, 'popularity', 0),
+                approved=getattr(r, 'approved', False),
+                rejection_suggestions=getattr(r, 'rejection_suggestions', [])
+            )
+            print(f"[DEBUG] Converted recipe to dataclass: {r}")
+        print(f"[DEBUG] Normalizing leavening ingredients for: {getattr(r, 'ingredients', None)}")
         r.ingredients = self.synth.normalize_leavening(r.ingredients)
-        r.approved = approved
-        r.metadata['validation_feedback'] = feedback
         r.validator_confidence = max(0.0, min(1.0, confidence))
-        if approved:
+        print(f"[DEBUG] Set validator_confidence: {r.validator_confidence}")
+        r.metadata['validated_by'] = admin.username
+        r.metadata['validated_by_id'] = admin.id
+        r.metadata['confidence_score'] = r.validator_confidence
+        if r.validator_confidence >= 0.9 or approved:
+            r.approved = True
             r.popularity += 1
             self.vstore.index(r)
-        self.tokens.reward_validator(validator, amount=0.5)
+            r.metadata['validation_feedback'] = feedback or (
+                'Auto-approved with high confidence (≥90%)' if r.validator_confidence >= 0.9 else 'Manually approved')
+            r.metadata['auto_approved'] = r.validator_confidence >= 0.9
+            print(f"[DEBUG] validate_recipe: calling update on recipe: {r}")
+            self.recipes.update(r)
+            print(f"[DEBUG] validate_recipe: update complete for recipe: {r.id}")
+        else:
+            r.approved = False
+            r.metadata['validation_feedback'] = feedback
+            r.metadata['auto_approved'] = False
+            r.rejection_suggestions = self._generate_ai_suggestions(r, feedback, confidence)
+            r.metadata['rejected'] = True
+            r.metadata['rejection_reason'] = feedback or "Does not meet quality standards"
+            print(f"✗ Recipe '{r.title}' REJECTED (confidence: {r.validator_confidence:.1%})")
+            print(f"  Suggestions sent to trainer for improvement")
+        self.tokens.reward_validator(admin, amount=0.5)
+        from .database import update_recipe_score
+        ai_scores = {
+            'validator_confidence_score': r.validator_confidence,
+            'ingredient_authenticity_score': self.scorer.ingredient_authenticity_score(r),
+            'serving_scalability_score': self.scorer.serving_scalability_score(r),
+            'ai_confidence_score': self.scorer.ai_confidence_score(r)
+        }
+        popularity = self.scorer.popularity_score(r)
+        update_recipe_score(self.db_session, recipe_id, ai_scores=ai_scores, popularity=popularity)
         return r
+    
+    def _generate_ai_suggestions(self, recipe: Recipe, feedback: Optional[str], confidence: float) -> List[str]:
+        """Generate AI suggestions for rejected recipes to help trainers improve them."""
+        suggestions = []
+        
+        # 1. Confidence Analysis
+        if confidence < 0.5:
+            suggestions.append(f"🔴 CRITICAL: Very low confidence ({confidence:.1%}) - Recipe needs major comprehensive review")
+        elif confidence < 0.7:
+            suggestions.append(f"🟡 MODERATE: Confidence at {confidence:.1%} - Recipe needs significant refinement")
+        else:
+            suggestions.append(f"🟢 GOOD: Confidence at {confidence:.1%} - Minor adjustments needed for approval")
+        
+        # 2. Ingredient Analysis
+        if len(recipe.ingredients) < 3:
+            suggestions.append("❌ Incomplete ingredients: Add at least 3 ingredients (currently {})".format(len(recipe.ingredients)))
+        elif len(recipe.ingredients) > 20:
+            suggestions.append("⚠️  Too many ingredients ({}) - Consider simplifying the recipe".format(len(recipe.ingredients)))
+        else:
+            suggestions.append(f"✓ Ingredient count ({len(recipe.ingredients)}) is appropriate")
+        
+        # 3. Unit and Quantity Validation
+        missing_units = []
+        invalid_quantities = []
+        for ing in recipe.ingredients:
+            if not ing.unit or ing.unit.strip() == "":
+                missing_units.append(ing.name)
+            if ing.quantity is None or ing.quantity <= 0:
+                invalid_quantities.append(f"{ing.name} (quantity: {ing.quantity})")
+        
+        if missing_units:
+            suggestions.append(f"❌ Missing units: Specify measurement units for: {', '.join(missing_units)}")
+        if invalid_quantities:
+            suggestions.append(f"❌ Invalid quantities: Fix quantities for: {', '.join(invalid_quantities)}")
+        
+        # 4. Cooking Steps Analysis
+        if len(recipe.steps) < 2:
+            suggestions.append(f"❌ Insufficient steps ({len(recipe.steps)}): Add at least 2-3 detailed cooking steps")
+        elif len(recipe.steps) > 50:
+            suggestions.append(f"⚠️  Too many steps ({len(recipe.steps)}) - Consider consolidating similar steps")
+        else:
+            suggestions.append(f"✓ Step count ({len(recipe.steps)}) is reasonable")
+        
+        # 5. Step Quality Analysis
+        short_steps = [s for s in recipe.steps if len(s.strip()) < 15]
+        if short_steps:
+            suggestions.append(f"⚠️  IMPROVE: {len(short_steps)} step(s) are too brief - Add more cooking details and timing")
+        
+        # 6. Servings Validation
+        if recipe.servings <= 0 or recipe.servings > 100:
+            suggestions.append(f"⚠️  ADJUST: Servings value ({recipe.servings}) seems unusual - Typically 1-50")
+        
+        # 7. Include Validator Feedback
+        if feedback and feedback.strip():
+            suggestions.append(f"\n📋 Validator Comment: {feedback}")
+        
+        # 8. General Improvement Tips
+        if confidence < 0.9:
+            suggestions.append("\n💡 GENERAL IMPROVEMENTS:")
+            suggestions.append("  • Review ingredient proportions - ensure they're realistic for the servings")
+            suggestions.append("  • Add cooking time and temperature estimates where applicable")
+            suggestions.append("  • Ensure steps are in logical cooking order")
+            suggestions.append("  • Use clear, specific cooking terms (e.g., 'medium heat', 'until golden brown')")
+            suggestions.append("  • Consider adding prep time and difficulty level")
+        
+        # 9. Resubmission Instructions
+        suggestions.append("\n📝 NEXT STEPS: Address the feedback above and resubmit the recipe for re-validation")
+        
+        return suggestions
 
-    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True) -> Recipe:
-        # prefer explicit title matches first (safer)
-        direct = [r for r in self.recipes.find_by_title(dish_name) if r.approved]
+    def request_recipe(self, user: User, dish_name: str, servings: int = 2, top_k: int = 10, reorder: bool = True, ingredients: list = None, steps: list = None) -> Recipe:
+        """Request a synthesized recipe for a specific dish and serving size, optionally with custom ingredients."""
+        if not user:
+            raise ValueError("User cannot be None")
+        if servings <= 0:
+            raise ValueError("Servings must be positive")
+
+        # Check for existing synthesized recipe to prevent duplicates
+        synthesized_title = f"Synthesized -- {dish_name} (for {servings} servings)"
+        print(f"[DEBUG] synthesized_title: '{synthesized_title}', servings: {servings}, created_by: {getattr(user, 'user_id', None)}")
+        # Try to find a draft for this user
+        draft = None
+        if hasattr(user, 'user_id'):
+            draft = self.recipes.find_draft(synthesized_title, servings, user.user_id)
+            print(f"[DEBUG] find_draft result: {draft}")
+        if draft:
+            print(f"[DEBUG] Returning existing draft synthesized recipe: {draft.id}")
+            return draft
+        # Fallback: check for any published with same title (should not create duplicate, but for safety)
+        found_by_title = self.recipes.find_by_title(synthesized_title)
+        print(f"[DEBUG] find_by_title results: {[getattr(r, 'id', None) for r in found_by_title]}")
+        existing = [r for r in found_by_title if getattr(r, 'title', '').lower() == synthesized_title.lower()]
+        print(f"[DEBUG] filtered existing synthesized recipes: {[getattr(r, 'id', None) for r in existing]}")
+        if existing:
+            print(f"[DEBUG] Returning existing synthesized recipe: {existing[0].id}")
+            return existing[0]
+
+        # If custom ingredients are provided, synthesize directly
+        if ingredients is not None:
+            from .models import Recipe as RecipeModel
+            custom_recipe = RecipeModel(
+                id=None,
+                title=dish_name,
+                ingredients=ingredients,
+                steps=steps if steps is not None else [],
+                servings=servings,
+                metadata={'submitted_by_id': getattr(user, 'user_id', None)},
+                ratings=[],
+                validator_confidence=0.0,
+                popularity=0,
+                approved=False,
+                rejection_suggestions=[]
+            )
+            synthesized = self.synth.synthesize([custom_recipe], servings, reorder=reorder)
+            synthesized = ensure_recipe_dataclass(synthesized)
+            synthesized.approved = False
+            synthesized.metadata['submitted_by_id'] = getattr(user, 'user_id', None)
+            self.recipes.add(synthesized)
+            self.vstore.index(synthesized)
+            self.tokens.reward_user_request(user, amount=0.25)
+            return synthesized
+
+        # Otherwise, use the normal candidate search and synthesis
+        direct = [r for r in self.recipes.find_by_title(dish_name) if hasattr(r, 'approved') and r.approved]
         candidates = []
         if direct:
             candidates = direct
         else:
-            text = f"{dish_name} for {servings}"
-            results = self.vstore.query(text, top_k=top_k)
-            candidate_ids = [rid for rid,_ in results]
-            candidates = [self.recipes.get(rid) for rid in candidate_ids if self.recipes.get(rid) and self.recipes.get(rid).approved]
-
+            search_text = f"{dish_name} for {servings} servings"
+            results = self.vstore.query(search_text, top_k=top_k)
+            candidate_ids = [rid for rid, _ in results]
+            candidates = [
+                self.recipes.get(rid)
+                for rid in candidate_ids
+                if self.recipes.get(rid) and hasattr(self.recipes.get(rid), 'approved') and self.recipes.get(rid).approved
+            ]
         if not candidates:
-            raise LookupError('No approved recipes found for this dish')
-
-        # if some candidates contain the dish name in title, prefer those
-        named = [r for r in candidates if dish_name.lower() in r.title.lower()]
+            raise LookupError(f'No approved recipes found for "{dish_name}"')
+        named = [r for r in candidates if hasattr(r, 'title') and dish_name.lower() in r.title.lower()]
         if named:
             candidates = named
-
-        scored = [(r, self.scorer.score(r)) for r in candidates]
+        top_candidates = [ensure_recipe_dataclass(r) for r in candidates]
+        for idx, r in enumerate(top_candidates):
+            if not hasattr(r, 'ingredients'):
+                print(f"[DEBUG] ERROR: Candidate recipe at index {idx} missing 'ingredients' attribute: {r}")
+                raise AttributeError(f"Candidate recipe at index {idx} missing 'ingredients' attribute")
+            if not isinstance(r.ingredients, list):
+                print(f"[DEBUG] ERROR: Candidate recipe at index {idx} has non-list 'ingredients': {r.ingredients}")
+                raise TypeError(f"Candidate recipe at index {idx} has non-list 'ingredients'")
+            if not r.ingredients:
+                print(f"[DEBUG] WARNING: Candidate recipe at index {idx} has empty 'ingredients' list: {r}")
+        scored = [(r, self.scorer.score(r)) for r in top_candidates]
         scored.sort(key=lambda x: x[1], reverse=True)
-        top_n = [r for r,_ in scored[:2]]
+        top_n = [r for r, _ in scored[:2]]
         synthesized = self.synth.synthesize(top_n, servings, reorder=reorder)
+        synthesized = ensure_recipe_dataclass(synthesized)
+        synthesized.approved = False
+        synthesized.metadata['submitted_by_id'] = getattr(user, 'user_id', None)
         self.recipes.add(synthesized)
         self.vstore.index(synthesized)
+        self.tokens.reward_user_request(user, amount=0.25)
         return synthesized
 
-
-    def rate_recipe(self, user: User, recipe_id: str, rating: float):
+    def rate_recipe(self, user: User, recipe_id: str, rating: float) -> Recipe:
+        """Rate a recipe (1.0 to 5.0 stars)."""
+        if not user:
+            raise ValueError("User cannot be None")
+        
+        if rating < 1.0 or rating > 5.0:
+            raise ValueError("Rating must be between 1.0 and 5.0")
+        
         r = self.recipes.get(recipe_id)
         if not r:
-            raise KeyError('Recipe not found')
-        r.ratings.append(max(0.0, min(5.0, rating)))
+            raise KeyError(f'Recipe "{recipe_id}" not found')
+        
+        r.ratings.append(max(1.0, min(5.0, rating)))
         r.popularity += 1
+        
+        # Reward user for rating
+        self.tokens.reward_user_rating(user, amount=0.1)
         return r
 
     def list_pending(self) -> List[Recipe]:
+        """List all recipes pending validation."""
         return self.recipes.pending()
+    
+    def list_approved(self) -> List[Recipe]:
+        """List all approved recipes."""
+        return self.recipes.approved()
+    
+    def get_recipe(self, recipe_id: str) -> Optional[Recipe]:
+        """Get a recipe by ID."""
+        return self.recipes.get(recipe_id)
+    
+    def get_user(self, user_id: str) -> Optional[User]:
+        """Get a user by ID."""
+        return self.users.get(user_id)
 
     def event_plan(self, event_name: str, guest_count: int, budget_per_person: float, dietary: Optional[str] = None):
+        """Plan an event menu."""
+        if guest_count <= 0:
+            raise ValueError("Guest count must be positive")
+        if budget_per_person <= 0:
+            raise ValueError("Budget per person must be positive")
+        
         planner = EventPlanner(self.recipes)
         return planner.plan_event(event_name, guest_count, budget_per_person, dietary)

@@ -142,7 +142,7 @@ class Synthesizer:
         """
         Improved ensure_ingredient_coverage. (Rewritten to fix insertion/order/index bugs.)
         """
-        import re
+        
 
         if not merged_ings:
             print("DEBUG: no merged_ings -> returning unchanged out_lines")
@@ -2892,6 +2892,9 @@ class Synthesizer:
                 if 'drain' not in out_lines[idx].lower():
                     out_lines[idx] = out_lines[idx].rstrip(' .;') + ', then drain.'
 
+        # Remove [AUTO-GEN] prefix from all steps before returning
+        out_lines = [line.replace('[AUTO-GEN] ', '') if line.startswith('[AUTO-GEN]') else line for line in out_lines]
+
         # If soy sauce is already added later, remove earlier soy-only steps (don't strip from multi-ingredient steps)
         soy_indices = [i for i, s in enumerate(out_lines) if re.search(r'\bsoy\s+sauce\b', s, flags=re.I)]
         if len(soy_indices) > 1:
@@ -2984,8 +2987,14 @@ class Synthesizer:
         print(f"DEBUG: final ai_conf={ai_conf}, validator_conf={validator_conf}")
 
         # Prepare title
+        
         base_title = top_recipes[0].title.split(':')[0].strip()
-        title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
+        # Remove any previous '(for N servings)' from the base title
+        base_title = re.sub(r'\s*\(for \d+ servings\)$', '', base_title)
+        if not base_title.startswith("Synthesized --"):
+            title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
+        else:
+            title = f"{base_title} (for {requested_servings} servings)"
         print("DEBUG: final recipe title =", title)
 
         # Metadata
@@ -2999,6 +3008,11 @@ class Synthesizer:
         # Normalize leavening ingredients
         print("\nDEBUG: calling normalize_leavening() before creating final recipe")
         merged_ings = self.normalize_leavening(merged_ings)
+
+        # Ensure all items in merged_ings are Ingredient objects
+        for i, ing in enumerate(merged_ings):
+            if isinstance(ing, dict):
+                merged_ings[i] = Ingredient(**ing)
 
         print("DEBUG: FINAL steps =", out_lines)
         print("DEBUG: FINAL merged_ings =", merged_ings)

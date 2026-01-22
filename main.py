@@ -9,11 +9,15 @@ Run:
 
 import pprint
 from Module.controller import KitchenMind
+from Module.repository_postgres import PostgresRecipeRepository
+from Module.database import SessionLocal
 from dataclasses import asdict
 
 
 def example_run():
-    km = KitchenMind()
+    db_session = SessionLocal()
+    repo = PostgresRecipeRepository(db_session)
+    km = KitchenMind(recipe_repo=repo, db_session=db_session)
     # create users
     t = km.create_user('alice_trainer', role='trainer')
     v = km.create_user('bob_validator', role='validator')
@@ -364,9 +368,19 @@ def example_run():
 
 
         # ---------- VALIDATE ALL RECIPES ----------
+    from Module.ai_validation import ai_validate_recipe
+    print("\n--- AI Validation Demo ---")
     for r in km.recipes.recipes.values():
         if r.metadata.get("submitted_by") == "alice_trainer":
-            km.validate_recipe(v, r.id, approved=True, feedback="Auto-approved", confidence=0.85)
+            approved, feedback, confidence = ai_validate_recipe(
+                r.title,
+                r.ingredients,
+                r.steps
+            )
+            print(f"AI validation for '{r.title}': approved={approved}, confidence={confidence:.2f}")
+            print(f"Feedback: {feedback}")
+            # Optionally, update recipe approval status based on AI result
+            km.validate_recipe(v, r.id, approved=approved, feedback=feedback, confidence=confidence)
 
     # ---------- Request Synthesis ----------
     try:
@@ -400,7 +414,7 @@ def example_run():
 
     # ---------- Balances ----------
     print('\n--- User Balances (RMDT) ---')
-    for usr in (t, v, u):
+    for usr in (t, u):
         print(f"{usr.username} ({usr.role}): {usr.rmdt_balance} RMDT")
 
 
