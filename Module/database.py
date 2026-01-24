@@ -129,7 +129,6 @@ class User(Base):
     name = Column(String)
     phone_number = Column(String)
     email = Column(String, unique=True)
-    login_identifier = Column(String, unique=True)
     password_hash = Column(String)
     auth_type = Column(String)
     otp_hash = Column(String)

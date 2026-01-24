@@ -32,23 +32,9 @@ def update_user(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Manual field-order validation for friendly messages
-        if user_update.name is not None:
-            if len(user_update.name.strip()) == 0:
-                raise HTTPException(status_code=422, detail="Name cannot be empty.")
-            if len(user_update.name.strip()) < 2:
-                raise HTTPException(status_code=422, detail="Name must be at least 2 characters long.")
-
-        if user_update.email is not None:
-            if len(user_update.email.strip()) == 0:
-                raise HTTPException(status_code=422, detail="Email must be a valid email address (e.g., user@example.com).")
-
-        if user_update.dietary_preference is not None:
-            if len(user_update.dietary_preference.strip()) == 0:
-                raise HTTPException(status_code=422, detail="Dietary preference is required. Use one of: VEG, NON_VEG.")
-
-        # Validate user_id format first
+        # FIRST: Validate user_id format
         import uuid as uuid_module
+        import re
         try:
             uuid_module.UUID(user_id)
         except ValueError:
@@ -57,7 +43,7 @@ def update_user(
                 detail="Invalid user ID format. Please provide a valid UUID (e.g., 020b5621-937d-4c82-8752-959c512fgh78)."
             )
         
-        # Authorization: only the user themselves or an admin can update
+        # SECOND: Authorization check
         current_user_id = current_user.get("user_id")
         current_user_role = current_user.get("role")
         
@@ -67,6 +53,57 @@ def update_user(
                 detail="You do not have permission to update this user. Only the account owner or an admin can update user information."
             )
         
+        # THIRD: Validate request body fields in order: first_name -> last_name -> phone_number -> dietary_preference
+        
+        # Validate first_name
+        if user_update.first_name is not None:
+            first_name = user_update.first_name.strip()
+            if len(first_name) == 0:
+                raise HTTPException(status_code=422, detail="First name cannot be empty.")
+            if len(first_name) < 2:
+                raise HTTPException(status_code=422, detail="First name must be at least 2 characters.")
+            if len(first_name) > 30:
+                raise HTTPException(status_code=422, detail="First name must be at most 30 characters.")
+            if not re.match(r"^[A-Za-z\s'-]+$", first_name):
+                raise HTTPException(status_code=422, detail="First name may only contain letters, spaces, hyphens, or apostrophes.")
+
+        # Validate last_name
+        if user_update.last_name is not None:
+            last_name = user_update.last_name.strip()
+            if len(last_name) == 0:
+                raise HTTPException(status_code=422, detail="Last name cannot be empty.")
+            if len(last_name) < 2:
+                raise HTTPException(status_code=422, detail="Last name must be at least 2 characters.")
+            if len(last_name) > 30:
+                raise HTTPException(status_code=422, detail="Last name must be at most 30 characters.")
+            if not re.match(r"^[A-Za-z\s'-]+$", last_name):
+                raise HTTPException(status_code=422, detail="Last name may only contain letters, spaces, hyphens, or apostrophes.")
+
+        # Validate phone_number
+        if user_update.phone_number is not None:
+            phone_number = user_update.phone_number.strip()
+            if len(phone_number) == 0:
+                raise HTTPException(status_code=422, detail="Phone number cannot be empty.")
+            if not re.match(r'^(?:\+91)?[6-9]\d{9}$', phone_number):
+                raise HTTPException(status_code=422, detail="Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9).")
+            normalized_phone = phone_number
+            if normalized_phone.startswith('+91'):
+                normalized_phone = normalized_phone[3:]
+            # Reject repeated digits and obvious sequences
+            if len(set(normalized_phone)) == 1:
+                raise HTTPException(status_code=422, detail="Phone number looks like a placeholder (repeated digits). Please provide a real contact number.")
+            if normalized_phone in {"1234567890", "9876543210"}:
+                raise HTTPException(status_code=422, detail="Phone number looks like a placeholder (sequential digits). Please provide a real contact number.")
+
+        # Validate dietary_preference
+        if user_update.dietary_preference is not None:
+            dietary_preference = user_update.dietary_preference.strip()
+            if len(dietary_preference) == 0:
+                raise HTTPException(status_code=422, detail="Dietary preference cannot be empty.")
+            if dietary_preference.upper() not in {"VEG", "NON_VEG"}:
+                raise HTTPException(status_code=422, detail="Dietary preference must be one of: VEG, NON_VEG.")
+        
+        # FOURTH: Update user
         service = UserService(db)
         result = service.update_user(user_id, user_update)
         return {
@@ -111,7 +148,7 @@ def get_user(
             )
         
         service = UserService(db)
-        result = service.get_user(user_id)
+        result = service.get_user_profile(user_id)
         return {
             "status": True,
             "message": "User fetched successfully.",

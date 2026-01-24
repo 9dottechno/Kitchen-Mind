@@ -1,6 +1,6 @@
 import jwt
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-fallback-key")
@@ -8,17 +8,36 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def format_expiration_time(unix_timestamp) -> str:
+    """Convert Unix timestamp to human-readable format in IST."""
+    from datetime import timezone as tz_module, timedelta
+    ist = tz_module(timedelta(hours=5, minutes=30))
+    dt = datetime.fromtimestamp(unix_timestamp, tz=ist)
+    return dt.strftime('%Y-%m-%d %H:%M:%S IST')
 
-def create_refresh_token(data: dict, expires_delta: timedelta = None) -> str:
+def create_access_token(data: dict, expires_delta: timedelta = None) -> Dict[str, Any]:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    # Extract Unix timestamp from datetime object
+    exp_timestamp = int(expire.timestamp())
+    return {
+        "token": token,
+        "expires_at": format_expiration_time(exp_timestamp)
+    }
+
+def create_refresh_token(data: dict, expires_delta: timedelta = None) -> Dict[str, Any]:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    to_encode.update({"exp": expire})
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    # Extract Unix timestamp from datetime object
+    exp_timestamp = int(expire.timestamp())
+    return {
+        "token": token,
+        "expires_at": format_expiration_time(exp_timestamp)
+    }
 
 def decode_token(token: str) -> Dict[str, Any]:
     try:

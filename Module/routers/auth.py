@@ -6,6 +6,7 @@ from Module.database import get_db
 from Module.routers.base import api_router
 from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest, ChangePasswordRequest
 from Module.services.auth_service import AuthService
+from Module.token_utils import format_expiration_time
 
 security = HTTPBearer()
 
@@ -65,13 +66,17 @@ def refresh_token_endpoint(request: RefreshRequest, db: Session = Depends(get_db
 
 @api_router.get("/protected")
 def protected_route(user=Depends(get_current_user)):
+    user_data = user.copy()
+    if "exp" in user_data:
+        user_data["token_expires_at"] = format_expiration_time(user_data["exp"])
+        del user_data["exp"]
     return {
         "status": True,
         "message": "You are authenticated",
-        "data": {"user": user}
+        "data": {"user": user_data}
     }
 
-@api_router.post("/change-password")
+@api_router.post("/change-password", include_in_schema=False)
 def change_password(
     request: ChangePasswordRequest,
     db: Session = Depends(get_db),

@@ -204,6 +204,25 @@ class PostgresRecipeRepository:
             ))
         return db_version
 
+    def add_version_to_recipe(self, recipe_id: str, ingredients, steps, servings, submitted_by=None):
+        """Add a new version to an existing recipe. Returns the updated Recipe model."""
+        import datetime
+        db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        if not db_recipe:
+            raise ValueError(f"Recipe {recipe_id} not found")
+        
+        version_id = str(uuid.uuid4())
+        db_version = self._create_version(version_id, recipe_id, submitted_by, servings, ingredients, steps)
+        db_recipe.versions.append(db_version)
+        db_recipe.current_version_id = version_id
+        db_recipe.servings = servings  # Update to latest servings
+        
+        self.db.add(db_version)
+        self.db.commit()
+        self.db.refresh(db_recipe)
+        print(f"[DEBUG] Added version {version_id} to recipe {recipe_id}, new servings: {servings}")
+        return self._to_model(db_recipe)
+
     """Repository using PostgreSQL for persistent storage."""
 
     def __init__(self, db: Session):

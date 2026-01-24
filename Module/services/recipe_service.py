@@ -1,4 +1,5 @@
 import uuid
+import os
 from datetime import datetime
 from typing import List
 from sqlalchemy.orm import Session
@@ -33,6 +34,15 @@ class RecipeService:
         if str(trainer_role).lower() not in ["trainer", "admin"]:
             raise PermissionError("Only trainers can submit recipes")
         
+        # Check for existing recipe with same title and servings
+        existing_recipe = self.db.query(DBRecipe).filter(
+            DBRecipe.dish_name == recipe.title,
+            DBRecipe.servings == recipe.servings,
+            DBRecipe.created_by == trainer_id
+        ).first()
+        if existing_recipe:
+            raise ValueError("Recipe with this title and servings already exists for this trainer")
+        
         if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
             ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
         else:
@@ -46,27 +56,7 @@ class RecipeService:
             submitted_by=trainer.user_id
         )
         
-        # Sync to in-memory store
-        try:
-            from api import km_instance
-            from Module.models import Recipe, Ingredient
-            mem_recipe = Recipe(
-                recipe_id=recipe_obj.id,
-                title=recipe_obj.title,
-                ingredients=[Ingredient(name=ing.name, quantity=ing.quantity, unit=ing.unit) for ing in recipe_obj.ingredients],
-                steps=recipe_obj.steps,
-                servings=recipe_obj.servings,
-                metadata=getattr(recipe_obj, 'metadata', {}),
-                ratings=getattr(recipe_obj, 'ratings', []),
-                validator_confidence=getattr(recipe_obj, 'validator_confidence', 0.0),
-                popularity=getattr(recipe_obj, 'popularity', 0),
-                approved=recipe_obj.approved,
-                rejection_suggestions=getattr(recipe_obj, 'rejection_suggestions', [])
-            )
-            km_instance.recipes.add(mem_recipe)
-            km_instance.vstore.index(mem_recipe)
-        except Exception as sync_e:
-            print(f"[ERROR] Failed to sync recipe to in-memory store: {sync_e}")
+        # In-memory sync removed (caused dataclass signature mismatch)
         
         version_id = None
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
@@ -74,29 +64,44 @@ class RecipeService:
             version_id = db_recipe.current_version_id
 
         # Auto-validate immediately after submission so trainers see approved recipes without extra calls
+        approved_status = False
         if version_id:
             try:
+                print(f"[DEBUG] Auto-validation starting for version_id={version_id}")
                 self.validate_recipe(version_id)
-                # Refresh recipe_obj to reflect any approval/is_published changes
-                self.db.refresh(recipe_obj)
+                # Query the validation record to get the approved status from DB
+                latest_validation = (
+                    self.db.query(Validation)
+                    .filter(Validation.version_id == version_id)
+                    .order_by(Validation.validated_at.desc())
+                    .first()
+                )
+                approved_status = latest_validation.approved if latest_validation else False
+                print(f"[DEBUG] Auto-validation finished for version_id={version_id}, approved={approved_status}")
             except Exception as val_e:
                 # Keep submission successful even if validation fails; recipe remains pending
                 print(f"[WARN] Auto validation failed for version {version_id}: {val_e}")
+                import traceback
+                traceback.print_exc()
         
         return RecipeResponse(
             recipe_id=recipe_obj.id,
             version_id=version_id,
             title=recipe_obj.title,
             servings=recipe_obj.servings,
-            approved=getattr(recipe_obj, 'approved', getattr(recipe_obj, 'is_published', False)),
+            approved=approved_status,
             popularity=getattr(recipe_obj, 'popularity', 0),
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
             steps=getattr(recipe_obj, 'steps', [])
         )
     
     def list_recipes(self, approved_only: bool = True) -> List[RecipeResponse]:
-        """List recipes, optionally filtering by approval status."""
-        recipes = self.repo.approved() if approved_only else self.repo.list()
+        """List recipes filtered by approval status.
+
+        approved_only=True  -> only approved (published)
+        approved_only=False -> only pending/unapproved
+        """
+        recipes = self.repo.approved() if approved_only else self.repo.pending()
         response = []
         for r in recipes:
             version_id = None
@@ -117,10 +122,61 @@ class RecipeService:
     
     def synthesize_recipe(self, request: RecipeSynthesisRequest, user_id: str) -> RecipeResponse:
         """Synthesize multiple recipes into one."""
+        print(f"[DEBUG] synthesize_recipe called with dish_name='{request.dish_name}', servings={request.servings}, user_id={user_id}")
         from Module.database import User as DBUser
         user = self.db.query(DBUser).filter(DBUser.user_id == user_id).first()
         if not user:
             raise ValueError("No user found with the provided user ID")
+        
+        # Check if dish_name exists in database; if not, find similar one
+        dish_name = request.dish_name
+        existing_recipes = self.db.query(DBRecipe).distinct(DBRecipe.dish_name).all()
+        existing_dish_names = [r.dish_name for r in existing_recipes if r.dish_name]
+        
+        # Try exact match (case-insensitive)
+        exact_match = None
+        for existing_name in existing_dish_names:
+            if existing_name.lower() == dish_name.lower():
+                exact_match = existing_name
+                break
+        
+        if exact_match:
+            dish_name = exact_match
+            print(f"[DEBUG] Found exact match (case-insensitive): {dish_name}")
+        else:
+            # Find similar dish name using fuzzy matching (case-insensitive)
+            import difflib
+            existing_names_lower = [name.lower() for name in existing_dish_names]
+            close_matches = difflib.get_close_matches(dish_name.lower(), existing_names_lower, n=1, cutoff=0.5)
+            if close_matches:
+                # Get original name with proper casing
+                matched_idx = existing_names_lower.index(close_matches[0])
+                dish_name = existing_dish_names[matched_idx]
+                print(f"[DEBUG] Found similar match for '{request.dish_name}': {dish_name}")
+            else:
+                print(f"[DEBUG] No similar match found for '{request.dish_name}'")
+        
+        # Update request with matched/corrected dish_name
+        request.dish_name = dish_name
+        
+        # Validate dish_name is genuine (after user_id is verified)
+        dish_name = request.dish_name.lower()
+        placeholder_values = {
+            "string", "test", "dish", "recipe", "food", "meal", "dish name",
+            "placeholder", "example", "sample", "demo", "x", "y", "z",
+            "aaa", "bbb", "ccc", "ddd", "eee", "fff", "hhh", "iii", "jjj"
+        }
+        
+        if dish_name in placeholder_values:
+            raise ValueError('Please provide a genuine dish name (e.g., "Pasta Carbonara", "Biryani", "Tacos"), not placeholder text')
+        
+        # Reject names that are just repeated characters
+        if len(set(dish_name.replace(" ", ""))) == 1:
+            raise ValueError('Dish name must contain varied characters, not just repetition')
+        
+        # Reject very generic single-word dishes if they're too short
+        if len(request.dish_name.split()) == 1 and len(request.dish_name) < 4:
+            raise ValueError('Single-word dish names must be at least 4 characters long')
         
         from api import km_instance
         kwargs = {
@@ -128,8 +184,53 @@ class RecipeService:
             'dish_name': request.dish_name,
             'servings': request.servings
         }
-        if request.ingredients is not None:
-            kwargs['ingredients'] = request.ingredients
+        
+        # Check if a recipe for this dish already exists (by this user)
+        # Look for recipes containing the dish name (not just synthesized ones)
+        print(f"[DEBUG] Searching for existing recipes with dish_name containing '{request.dish_name}' for user {user_id}")
+        
+        existing_recipes = self.db.query(DBRecipe).filter(
+            DBRecipe.created_by == user_id,
+            DBRecipe.dish_name.ilike(f"%{request.dish_name}%")
+        ).all()
+        
+        print(f"[DEBUG] Found {len(existing_recipes)} recipe(s) matching dish name '{request.dish_name}'")
+        for r in existing_recipes:
+            print(f"[DEBUG]   - {r.recipe_id}: {r.dish_name} (servings={r.servings})")
+        
+        existing_recipe = None
+        if existing_recipes:
+            # Pick the first one (should be the recipe to add versions to)
+            existing_recipe = existing_recipes[0]
+            print(f"[DEBUG] Using recipe {existing_recipe.recipe_id} as base for versioning")
+            
+            # Check if a version with this EXACT servings already exists
+            existing_version = self.db.query(RecipeVersion).filter(
+                RecipeVersion.recipe_id == existing_recipe.recipe_id,
+                RecipeVersion.base_servings == request.servings
+            ).first()
+            
+            if existing_version:
+                print(f"[DEBUG] Version with servings={request.servings} already exists, returning it (deduplication)")
+                # Return existing version (deduplication - same dish, same servings)
+                ingredients = [{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in existing_version.ingredients]
+                steps = [step.instruction for step in sorted(existing_version.steps, key=lambda x: x.step_order)]
+                
+                return RecipeResponse(
+                    recipe_id=existing_recipe.recipe_id,
+                    version_id=existing_version.version_id,
+                    title=existing_recipe.dish_name,
+                    servings=existing_version.base_servings,
+                    approved=existing_recipe.is_published,
+                    popularity=getattr(existing_recipe, 'popularity', 0),
+                    ingredients=ingredients,
+                    steps=steps
+                )
+            else:
+                print(f"[DEBUG] No version found for servings={request.servings}, will add a new version to recipe {existing_recipe.recipe_id}")
+        
+        # Synthesize the recipe
+        print(f"[DEBUG] Synthesizing recipe for {request.dish_name} with {request.servings} servings")
         result = km_instance.request_recipe(**kwargs)
         
         from Module.controller import ensure_recipe_dataclass
@@ -143,19 +244,35 @@ class RecipeService:
         except Exception:
             raise RuntimeError("Problem accessing the recipe ingredients")
         
-        recipe_obj = self.repo.create_recipe(
-            title=result.title,
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
-            steps=result.steps,
-            servings=result.servings,
-            submitted_by=user.user_id,
-            approved=getattr(result, 'approved', False)
-        )
-        
-        version_id = None
-        db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-        if db_recipe and hasattr(db_recipe, 'current_version_id'):
-            version_id = db_recipe.current_version_id
+        # If recipe exists, add a new version to it; otherwise create new recipe
+        if existing_recipe:
+            print(f"[DEBUG] Adding version to existing recipe {existing_recipe.recipe_id}")
+            recipe_obj = self.repo.add_version_to_recipe(
+                recipe_id=existing_recipe.recipe_id,
+                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
+                steps=result.steps,
+                servings=request.servings,
+                submitted_by=user.user_id
+            )
+            # Get the newly created version ID
+            db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == existing_recipe.recipe_id).first()
+            version_id = db_recipe.current_version_id if db_recipe else None
+            print(f"[DEBUG] New version_id: {version_id}")
+        else:
+            print(f"[DEBUG] Creating new recipe for {request.dish_name}")
+            recipe_obj = self.repo.create_recipe(
+                title=f"Synthesized -- {request.dish_name} (for {request.servings} servings)",
+                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
+                steps=result.steps,
+                servings=request.servings,
+                submitted_by=user.user_id,
+                approved=getattr(result, 'approved', False)
+            )
+            version_id = None
+            db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
+            if db_recipe and hasattr(db_recipe, 'current_version_id'):
+                version_id = db_recipe.current_version_id
+            print(f"[DEBUG] New recipe_id: {recipe_obj.id}, version_id: {version_id}")
         
         return RecipeResponse(
             recipe_id=recipe_obj.id,
@@ -193,12 +310,16 @@ class RecipeService:
         if not recipe:
             raise ValueError("No parent recipe found for this version")
         
+        api_key_present = bool(os.environ.get("OPENAI_API_KEY"))
+        print(f"[DEBUG] validate_recipe called for version_id={version_id}, api_key_present={api_key_present}")
         approved, feedback, confidence = ai_validate_recipe(
             recipe.dish_name,
             [f"{ing.name} {ing.quantity} {ing.unit}" for ing in version.ingredients],
             [step.instruction for step in version.steps]
         )
+        print(f"[DEBUG] ai_validate_recipe returned approved={approved}, confidence={confidence}")
         
+        print(f"[DEBUG] Persisting validation: version_id={version_id}, approved={approved}, confidence={confidence}")
         validation = Validation(
             validation_id=str(uuid.uuid4()),
             version_id=version_id,

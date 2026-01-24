@@ -1,5 +1,6 @@
 from typing import List
 from sqlalchemy.orm import Session
+import sqlalchemy as sa
 
 from Module.database import Role
 from Module.schemas.role import RoleCreate, RoleResponse
@@ -27,6 +28,15 @@ class RoleService:
         existing = self.db.query(Role).filter(Role.role_id == role.role_id).first()
         if existing:
             raise ValueError(f"Role with role_id '{role.role_id}' already exists")
+
+        # Case-insensitive uniqueness for role_name
+        name_exists = (
+            self.db.query(Role)
+            .filter(sa.func.lower(Role.role_name) == role.role_name.lower())
+            .first()
+        )
+        if name_exists:
+            raise ValueError(f"Role with role_name '{role.role_name}' already exists (case-insensitive)")
         
         db_role = Role(
             role_id=role.role_id,

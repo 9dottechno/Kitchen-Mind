@@ -464,13 +464,14 @@ def test_plan_event():
 
 
 def test_public_recipe_search():
-    """Test public recipe search endpoint."""
-    print_test("Public Recipe Search")
+    """Test recipe listing with approval filter (no public endpoint; use /api/recipes)."""
+    print_test("Recipe Search (approved only)")
     try:
-        response = requests.get(f"{BASE_URL}/public/recipes")
+        # /api/public/recipes has been removed; use /api/recipes with approved_only=true
+        response = requests.get(f"{BASE_URL}/recipes", params={"approved_only": True})
         if response.status_code == 200:
             recipes = _unwrap(response.json()) or []
-            print_success(f"Retrieved {len(recipes)} public recipes")
+            print_success(f"Retrieved {len(recipes)} approved recipes")
             return recipes
         else:
             print_error(f"Status code: {response.status_code}")
@@ -481,32 +482,38 @@ def test_public_recipe_search():
         return None
 
 def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
-    """Test AI review/approval of a recipe."""
-    print_test("AI Review Recipe (auto-approve)")
+    """Test AI auto-validation happens on recipe submission.
+    
+    Note: Validation is now automatic on submit_recipe(). The manual
+    /api/recipe/version/{version_id}/validate endpoint still exists but is
+    hidden from Swagger docs (include_in_schema=False). This test verifies
+    that the auto-validation during submission produces the expected approval status.
+    """
+    print_test("AI Auto-Validation (on submission)")
     if not recipe:
-        print_error("No recipe provided for AI review")
+        print_error("No recipe provided for auto-validation check")
         return False
     try:
-        # Use version_id for AI review endpoint
+        # Check that recipe has approval status from auto-validation
         version_id = recipe.get('version_id')
         if not version_id:
-            print_error("No version_id in recipe object for AI review")
+            print_error("No version_id in recipe object")
             return False
-        response = requests.post(f"{BASE_URL}/recipe/version/{version_id}/validate")
+        
+        # Fetch the recipe to check approval status
+        response = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
         print(f"[DEBUG TEST] ai_review_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] ai_review_recipe text: {response.text}")
         if response.status_code == 200:
             result = _unwrap(response.json())
-            print_success(f"Recipe AI-reviewed: {result}")
-            if isinstance(result, dict) and not result.get('approved', False):
-                print_error("AI review did not approve the recipe!")
+            approved = result.get('approved', False) if isinstance(result, dict) else False
+            if approved:
+                print_success(f"Recipe auto-validated on submission: approved={approved}")
+                return True
+            else:
+                print_error(f"Recipe not approved after auto-validation: approved={approved}")
+                print_error("Check AI validation service configuration")
                 return False
-            return True
-        elif response.status_code == 500:
-            # OpenAI API error (e.g., invalid key)
-            print_error(f"AI validation service unavailable (OpenAI 401/config issue): {response.status_code}")
-            print_error("Skipping AI review (recipe will remain unapproved)")
-            return False
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
@@ -583,12 +590,19 @@ def test_refresh_token(refresh_token):
         return None
 
 def test_protected_route(access_token):
-    """Test protected route with access token."""
-    print_test("Protected Route (JWT)")
+    """Test protected route with access token.
+    
+    Note: Token expiration is now displayed in IST timezone (UTC+5:30)
+    as token_expires_at: "YYYY-MM-DD HH:MM:SS IST"
+    """
+    print_test("Protected Route (JWT with IST expiration)")
     headers = {"Authorization": f"Bearer {access_token}"}
     resp = requests.get(f"{BASE_URL}/protected", headers=headers)
     if resp.status_code == 200:
-        print_success("Accessed protected route successfully")
+        result = resp.json()
+        expiry = result.get('token_expires_at', 'N/A') if isinstance(result, dict) else 'N/A'
+        print_success(f"Accessed protected route successfully")
+        print(f"  Token expires at: {expiry}")
         return True
     else:
         print_error(f"Status code: {resp.status_code}")
@@ -678,30 +692,31 @@ def run_all_tests():
         print(f"[DEBUG TEST] recipe object patched with id: {recipe}")
     results["submit_recipe"] = recipe is not None
 
-    # Approve recipe so synthesis will succeed
-    # If validator approval is only via OpenAI API, always use test_ai_review_recipe.
+    # Check auto-validation status (happens automatically on submit_recipe)
+    # Manual /api/recipe/version/{version_id}/validate endpoint still exists
+    # but is hidden from Swagger (include_in_schema=False)
     if recipe:
-        print(f"[DEBUG TEST] recipe object before AI review: {recipe}")
-        approved = test_ai_review_recipe(recipe)
-        print(f"[DEBUG TEST] approve_recipe result: {approved}")
-        # Fetch the recipe again to check approval status
+        print(f"[DEBUG TEST] recipe object before auto-validation check: {recipe}")
+        auto_validated = test_ai_review_recipe(recipe)
+        print(f"[DEBUG TEST] auto_validation_check result: {auto_validated}")
+        # Recipe should have approval status from auto-validation during submission
         version_id = recipe.get('version_id')
         if version_id:
             resp = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
             if resp.status_code == 200:
                 fetched_recipe = _unwrap(resp.json())
-                print(f"[DEBUG TEST] Recipe approval status after AI review: approved={fetched_recipe.get('approved')}, version_id={version_id}")
+                print(f"[DEBUG TEST] Recipe approval status after submission: approved={fetched_recipe.get('approved')}, version_id={version_id}")
             else:
-                print_error(f"[DEBUG] Could not fetch recipe after AI review, status: {resp.status_code}")
+                print_error(f"[DEBUG] Could not fetch recipe after submission, status: {resp.status_code}")
         else:
-            print_error("[DEBUG] No version_id in recipe to fetch after AI review!")
-        if not approved:
-            print_error("[DEBUG] Recipe was not approved before synthesis! Check AI review step above.")
+            print_error("[DEBUG] No version_id in recipe!")
+        if not auto_validated:
+            print_error("[DEBUG] Recipe auto-validation may have failed. Check AI validation service.")
             print_error(f"[DEBUG] Recipe object at failure: {recipe}")
-        results["approve_recipe"] = approved
+        results["auto_validation"] = auto_validated
     else:
-        print_error("[DEBUG] No recipe object to approve!")
-        results["approve_recipe"] = False
+        print_error("[DEBUG] No recipe object for auto-validation check!")
+        results["auto_validation"] = False
 
     # Get recipes
     recipes = test_get_recipes()
@@ -726,8 +741,8 @@ def run_all_tests():
     if user:
         print(f"[DEBUG TEST] user object before synthesis: {user}")
         print(f"[DEBUG TEST] recipe object before synthesis: {recipe}")
-        if not results.get("approve_recipe", False):
-            print_error("[DEBUG] Synthesis will likely fail because recipe is not approved!")
+        if not results.get("auto_validation", False):
+            print_error("[DEBUG] Synthesis may fail if recipe is not auto-validated!")
         results["synthesize_recipe"] = test_synthesize_recipe(user)
 
     # Rate recipe
@@ -743,6 +758,11 @@ def run_all_tests():
     print(f"\n{BLUE}{'='*50}")
     print("Test Summary")
     print(f"{'='*50}{RESET}")
+    print("\nNote:")
+    print("  - Public endpoint (/api/public/recipes) has been removed")
+    print("  - Recipe validation is now automatic on submission")
+    print("  - Token expiration is displayed in IST timezone (UTC+5:30)")
+    print("  - Manual validate endpoint is hidden from Swagger but still callable\n")
 
     passed = sum(1 for v in results.values() if v)
     total = len(results)

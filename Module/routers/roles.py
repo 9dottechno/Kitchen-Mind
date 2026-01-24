@@ -35,10 +35,7 @@ def create_role(
     try:
         # Admin-only authorization
         if current_user.get("role") != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. Only administrators can create roles."
-            )
+            raise PermissionError("Access denied. Only administrators can create roles.")
         
         service = RoleService(db)
         result = service.create_role(role)
@@ -49,6 +46,8 @@ def create_role(
         }
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

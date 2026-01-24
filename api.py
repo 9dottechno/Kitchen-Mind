@@ -8,7 +8,7 @@ import hashlib
 from Module.token_utils import create_access_token, create_refresh_token, decode_token
 
 # Import router modules so their endpoints register on the shared router
-from Module.routers import auth, public, users, roles, admin, recipes, events
+from Module.routers import auth, users, roles, admin, recipes, events
 
 
 app = FastAPI()

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import exists
 from sqlalchemy.orm import Session
 from fastapi import Request
@@ -25,7 +25,6 @@ class AdminService:
             user_id=admin_id,
             name=profile.name,
             email=profile.email,
-            login_identifier=profile.email,
             password_hash="",
             auth_type="admin",
             role_id="admin",
@@ -61,7 +60,7 @@ class AdminService:
         )
     
     def create_session(self, session: SessionCreate, request: Request = None) -> SessionResponse:
-        """Create a new session."""
+        """Create or return existing active session for user."""
         user = self.db.query(User).filter(User.user_id == session.user_id).first()
         if not user:
             raise ValueError(f"User not found: {session.user_id}")
@@ -69,7 +68,24 @@ class AdminService:
             raise ValueError("User profile incomplete (missing email or role)")
         
         from Module.database import Session as DBSession
-        now = datetime.utcnow()
+        
+        # Check for existing active session
+        existing_session = self.db.query(DBSession).filter(
+            DBSession.user_id == session.user_id,
+            DBSession.is_active == True,
+            DBSession.expires_at > datetime.now(timezone.utc)
+        ).first()
+        
+        if existing_session:
+            return SessionResponse(
+                session_id=existing_session.session_id,
+                user_id=existing_session.user_id,
+                created_at=str(existing_session.created_at)
+            )
+        
+        # Create new session only if none exists
+        # Use timezone-aware UTC to align with DB DateTime(timezone=True)
+        now = datetime.now(timezone.utc)
         user_agent = None
         ip_address = None
         

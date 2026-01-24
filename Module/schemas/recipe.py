@@ -63,10 +63,17 @@ class RecipeResponse(BaseModel):
 
 class RecipeSynthesisRequest(BaseModel):
     """Schema for recipe synthesis request."""
-    dish_name: str
-    servings: int = 2
-    ingredients: Optional[List[IngredientCreate]] = None
-    steps: Optional[List[str]] = None
+    dish_name: str = Field(..., min_length=3, max_length=100, description="Dish name (3-100 chars)")
+    servings: int = Field(2, ge=1, le=100, description="Servings must be 1-100")
+
+    @field_validator('dish_name')
+    @classmethod
+    def validate_dish_name_format(cls, v: str) -> str:
+        """Validate dish name format only (content validation happens in service layer)."""
+        v = v.strip()
+        if not re.match(r"^[a-zA-Z0-9\s\-\.,'&()]+$", v):
+            raise ValueError('Dish name can only contain letters, numbers, spaces, hyphens, dots, commas, apostrophes, ampersands, and parentheses')
+        return v
 
 class ValidationResponse(BaseModel):
     """Schema for recipe validation response."""

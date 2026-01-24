@@ -16,10 +16,7 @@ def create_admin_profile(
     try:
         # Admin-only authorization
         if current_user.get("role") != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. Only administrators can create admin profiles."
-            )
+            raise PermissionError("Access denied. Only administrators can create admin profiles.")
         
         service = AdminService(db)
         result = service.create_admin_profile(profile)
@@ -30,6 +27,8 @@ def create_admin_profile(
         }
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -42,10 +41,7 @@ def get_admin_profile(
     try:
         # Admin-only authorization
         if current_user.get("role") != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. Only administrators can view admin profiles."
-            )
+            raise PermissionError("Access denied. Only administrators can view admin profiles.")
         
         service = AdminService(db)
         result = service.get_admin_profile(admin_id)
@@ -56,6 +52,8 @@ def get_admin_profile(
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

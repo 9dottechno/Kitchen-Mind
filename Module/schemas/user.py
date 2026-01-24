@@ -44,6 +44,16 @@ class RegisterRequest(BaseModel):
         pattern = r'^(?:\+91)?[6-9]\d{9}$'
         if not re.match(pattern, v):
             raise ValueError("Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9).")
+        # Additional real-world checks to avoid placeholders
+        normalized = v.strip()
+        if normalized.startswith('+91'):
+            normalized = normalized[3:]
+        # Reject all same-digit numbers (e.g., 9999999999)
+        if len(set(normalized)) == 1:
+            raise ValueError("Phone number looks like a placeholder (repeated digits). Please provide a real contact number.")
+        # Reject obvious sequences
+        if normalized in {"1234567890", "9876543210"}:
+            raise ValueError("Phone number looks like a placeholder (sequential digits). Please provide a real contact number.")
         return v
 
     @validator('password', pre=True, always=True)
@@ -77,38 +87,25 @@ class RegisterResponse(BaseModel):
 
 class UserUpdate(BaseModel):
     """Schema for updating user information. Only allows safe fields to be modified."""
-    name: Optional[constr(strip_whitespace=True, min_length=2, max_length=100)] = None
-    email: Optional[EmailStr] = None
-    dietary_preference: Optional[constr(strip_whitespace=True)] = None
-    
-    @validator('name')
-    def validate_name_format(cls, v):
-        if v is not None:
-            import re
-            # Allow letters, spaces, hyphens, apostrophes
-            if not re.match(r"^[A-Za-z\s'-]+$", v):
-                raise ValueError("Name can only contain letters, spaces, hyphens, and apostrophes.")
-        return v
-    
-    @validator('dietary_preference')
-    def validate_dietary_preference_enum(cls, v):
-        if v is not None:
-            allowed = {"VEG", "NON_VEG"}
-            v_upper = v.upper().strip()
-            if v_upper not in allowed:
-                raise ValueError(f"Dietary preference must be one of: {', '.join(allowed)}")
-            return v_upper
-        return v
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    dietary_preference: Optional[str] = None
 
 class UserResponse(BaseModel):
     """Schema for user response."""
     user_id: str
     name: str
     email: str
-    login_identifier: str
     role_id: str
     dietary_preference: Optional[str] = None
     rating_score: float
     credit: float
     created_at: Optional[str] = None
     last_login_at: Optional[str] = None
+
+class UserProfileResponse(BaseModel):
+    """Schema for user profile response - minimal fields."""
+    first_name: str
+    last_name: str
+    phone_number: str

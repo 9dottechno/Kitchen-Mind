@@ -32,6 +32,19 @@ def submit_recipe(
         trainer = db.query(User).filter(User.user_id == trainer_id).first()
         if not trainer:
             raise HTTPException(status_code=404, detail="Trainer user not found")
+
+        # Authorization: only admins can submit on behalf of others.
+        # Trainers may submit only for themselves.
+        current_role = str(current_user.get("role", "")).lower()
+        current_user_id = current_user.get("user_id")
+        if current_role == "trainer":
+            if current_user_id != trainer_id:
+                raise HTTPException(status_code=403, detail="Trainers can only submit recipes for themselves.")
+        elif current_role == "admin":
+            pass  # admins allowed to submit for any trainer
+        else:
+            # regular users cannot submit recipes
+            raise HTTPException(status_code=403, detail="Access denied. Only trainers or administrators can submit recipes.")
         
         service = RecipeService(db)
         result = service.submit_recipe(recipe, trainer_id)
@@ -66,12 +79,28 @@ def list_recipes(
 @api_router.post("/recipe/synthesize")
 def synthesize_recipe(
     request: RecipeSynthesisRequest,
-    user_id: str = Query(...),
+    user_id: str = Query(..., description="User ID (UUID)"),
     db: Session = Depends(get_db)
 ):
     try:
+        # Validate user_id format first (before request body validation)
+        if not user_id or user_id.strip() == "":
+            raise HTTPException(status_code=400, detail="user_id is required")
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID format. Please provide a valid UUID.")
+        
+        # Validate user exists
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Now process the request body (dish_name and servings validation happens here)
         service = RecipeService(db)
         return service.synthesize_recipe(request, user_id)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
@@ -85,7 +114,7 @@ def get_pending_recipes(db: Session = Depends(get_db)):
     service = RecipeService(db)
     return service.get_pending_recipes()
 
-@api_router.post("/recipe/version/{version_id}/validate")
+@api_router.post("/recipe/version/{version_id}/validate", include_in_schema=False)
 def ai_review_recipe(
     version_id: str, 
     db: Session = Depends(get_db),

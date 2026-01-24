@@ -55,8 +55,8 @@ class AuthService:
         last_name = name_parts[1] if len(name_parts) > 1 else ""
         
         payload = {"user_id": db_user.user_id, "role": db_user.role_id, "email": db_user.email}
-        access_token = create_access_token(payload)
-        refresh_token = create_refresh_token(payload)
+        access_token_data = create_access_token(payload)
+        refresh_token_data = create_refresh_token(payload)
         
         return {
             "user_id": db_user.user_id,
@@ -65,19 +65,24 @@ class AuthService:
             "email": db_user.email,
             "phone_number": getattr(db_user, "phone_number", ""),
             "role": db_user.role_id,
-            "access_token": access_token,
-            "refresh_token": refresh_token
+            "access_token": access_token_data["token"],
+            "access_token_expires_at": access_token_data["expires_at"],
+            "refresh_token": refresh_token_data["token"],
+            "refresh_token_expires_at": refresh_token_data["expires_at"]
         }
     
     def refresh_token(self, request: RefreshRequest) -> dict:
         """Refresh access token."""
         payload = decode_token(request.refresh_token)
-        new_access_token = create_access_token({
+        new_access_token_data = create_access_token({
             "user_id": payload["user_id"], 
             "role": payload["role"], 
             "email": payload["email"]
         })
-        return {"access_token": new_access_token}
+        return {
+            "access_token": new_access_token_data["token"],
+            "access_token_expires_at": new_access_token_data["expires_at"]
+        }
     
     def validate_token(self, token: str) -> dict:
         """Validate and decode token."""
