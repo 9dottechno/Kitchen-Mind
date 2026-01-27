@@ -38,7 +38,7 @@ def ensure_recipe_dataclass(obj):
             servings=obj.get('servings', 1),
             metadata=obj.get('metadata', {}),
             ratings=obj.get('ratings', []),
-            validator_confidence=obj.get('validator_confidence', 0.0),
+            ai_confidence_score=obj.get('ai_confidence_score', 0.0),
             popularity=obj.get('popularity', 0),
             approved=obj.get('approved', False),
             rejection_suggestions=obj.get('rejection_suggestions', [])
@@ -67,7 +67,7 @@ def ensure_recipe_dataclass(obj):
         servings=getattr(obj, 'servings', 1),
         metadata=getattr(obj, 'metadata', {}),
         ratings=getattr(obj, 'ratings', []),
-        validator_confidence=getattr(obj, 'validator_confidence', 0.0),
+        ai_confidence_score=getattr(obj, 'ai_confidence_score', 0.0),
         popularity=getattr(obj, 'popularity', 0),
         approved=getattr(obj, 'approved', False),
         rejection_suggestions=getattr(obj, 'rejection_suggestions', [])
@@ -149,7 +149,7 @@ class KitchenMind:
                 servings=getattr(r, 'servings', 1),
                 metadata=getattr(r, 'metadata', {}),
                 ratings=getattr(r, 'ratings', []),
-                validator_confidence=getattr(r, 'validator_confidence', 0.0),
+                ai_confidence_score=getattr(r, 'ai_confidence_score', 0.0),
                 popularity=getattr(r, 'popularity', 0),
                 approved=getattr(r, 'approved', False),
                 rejection_suggestions=getattr(r, 'rejection_suggestions', [])
@@ -157,12 +157,12 @@ class KitchenMind:
             print(f"[DEBUG] Converted recipe to dataclass: {r}")
         print(f"[DEBUG] Normalizing leavening ingredients for: {getattr(r, 'ingredients', None)}")
         r.ingredients = self.synth.normalize_leavening(r.ingredients)
-        r.validator_confidence = max(0.0, min(1.0, confidence))
-        print(f"[DEBUG] Set validator_confidence: {r.validator_confidence}")
+        r.ai_confidence_score = max(0.0, min(5.0, confidence * 5.0))  # Convert 0-1 to 0-5
+        print(f"[DEBUG] Set ai_confidence_score: {r.ai_confidence_score}")
         r.metadata['validated_by'] = admin.username
         r.metadata['validated_by_id'] = admin.id
-        r.metadata['confidence_score'] = r.validator_confidence
-        if r.validator_confidence >= 0.9 or approved:
+        r.metadata['confidence_score'] = r.ai_confidence_score
+        if r.ai_confidence_score >= 4.5 or approved:  # 4.5 out of 5 = 90%
             r.approved = True
             r.popularity += 1
             self.vstore.index(r)
@@ -269,24 +269,23 @@ class KitchenMind:
         if servings <= 0:
             raise ValueError("Servings must be positive")
 
-        # Check for existing synthesized recipe to prevent duplicates
-        synthesized_title = f"Synthesized -- {dish_name} (for {servings} servings)"
-        print(f"[DEBUG] synthesized_title: '{synthesized_title}', servings: {servings}, created_by: {getattr(user, 'user_id', None)}")
+        # Use clean dish name without prefix
+        print(f"[DEBUG] dish_name: '{dish_name}', servings: {servings}, created_by: {getattr(user, 'user_id', None)}")
         # Try to find a draft for this user
         draft = None
         if hasattr(user, 'user_id'):
-            draft = self.recipes.find_draft(synthesized_title, servings, user.user_id)
+            draft = self.recipes.find_draft(dish_name, servings, user.user_id)
             print(f"[DEBUG] find_draft result: {draft}")
         if draft:
             print(f"[DEBUG] Returning existing draft synthesized recipe: {draft.id}")
             return draft
         # Fallback: check for any published with same title (should not create duplicate, but for safety)
-        found_by_title = self.recipes.find_by_title(synthesized_title)
+        found_by_title = self.recipes.find_by_title(dish_name)
         print(f"[DEBUG] find_by_title results: {[getattr(r, 'id', None) for r in found_by_title]}")
-        existing = [r for r in found_by_title if getattr(r, 'title', '').lower() == synthesized_title.lower()]
-        print(f"[DEBUG] filtered existing synthesized recipes: {[getattr(r, 'id', None) for r in existing]}")
+        existing = [r for r in found_by_title if getattr(r, 'title', '').lower() == dish_name.lower()]
+        print(f"[DEBUG] filtered existing recipes: {[getattr(r, 'id', None) for r in existing]}")
         if existing:
-            print(f"[DEBUG] Returning existing synthesized recipe: {existing[0].id}")
+            print(f"[DEBUG] Returning existing recipe: {existing[0].id}")
             return existing[0]
 
         # If custom ingredients are provided, synthesize directly

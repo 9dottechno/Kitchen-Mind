@@ -63,7 +63,6 @@ Response:
   "user_id": "uuid-string",
   "name": "Alice Trainer",
   "email": "alice@example.com",
-  "login_identifier": "alice_trainer",
   "role_id": "trainer",
   "dietary_preference": "vegetarian",
   "rating_score": 1.5,

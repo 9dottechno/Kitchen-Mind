@@ -50,6 +50,7 @@ class PostgresRecipeRepository:
                 feedback.comment = comment
             feedback.is_revised = True
             feedback.revised_at = datetime.utcnow()
+            print(f"[DEBUG] add_rating: updated feedback_id={feedback.feedback_id} rating={rating} user_id={user_id} version_id={version_id}")
         else:
             feedback = Feedback(
                 feedback_id=str(uuid.uuid4()),
@@ -60,8 +61,11 @@ class PostgresRecipeRepository:
                 comment=comment
             )
             self.db.add(feedback)
+            self.db.flush()  # Ensure feedback is persisted before update_recipe_score queries it
+            print(f"[DEBUG] add_rating: created feedback_id={feedback.feedback_id} rating={rating} user_id={user_id} version_id={version_id}")
         self.db.commit()
         self.db.refresh(feedback)
+        print(f"[DEBUG] add_rating: committed feedback_id={feedback.feedback_id} rating={feedback.rating}")
         return feedback
 
     def get_ratings(self, version_id: str):
@@ -73,29 +77,85 @@ class PostgresRecipeRepository:
     def create_recipe(self, title, ingredients, steps, servings, submitted_by=None, approved=False):
         """Create and persist a new recipe, returning the Recipe model with id. Prevent duplicate drafts."""
         print(f"[DEBUG] create_recipe called with title={title}, servings={servings}, submitted_by={submitted_by}, approved={approved}")
-        # If this is a draft (not approved/published), check for existing draft
+        # If this is a draft (not approved/published), check for existing draft and update it
         if not approved:
             existing_draft = self.find_draft(title, servings, submitted_by)
             if existing_draft:
-                print(f"[DEBUG] Existing draft found, returning it: id={getattr(existing_draft, 'id', None)}")
+                print(f"[DEBUG] Existing draft found, updating it: id={getattr(existing_draft, 'id', None)}")
+                db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == existing_draft.id).first()
+                if db_recipe:
+                    # Get the latest version
+                    version = db_recipe.versions[-1] if db_recipe.versions else None
+
+                    if version:
+                        # Clear existing ingredients and steps for this version
+                        self.db.query(DBIngredient).filter(DBIngredient.version_id == version.version_id).delete()
+                        self.db.query(DBStep).filter(DBStep.version_id == version.version_id).delete()
+
+                        # Normalize ingredient input
+                        from Module.models import Ingredient as IngredientModel
+                        safe_ingredients = []
+                        for ing in ingredients:
+                            if isinstance(ing, dict):
+                                safe_ingredients.append(IngredientModel(**ing))
+                            else:
+                                safe_ingredients.append(ing)
+
+                        version.ingredients = [
+                            DBIngredient(
+                                ingredient_id=str(uuid.uuid4()),
+                                version_id=version.version_id,
+                                name=ing.name,
+                                quantity=ing.quantity,
+                                unit=ing.unit
+                            ) for ing in safe_ingredients
+                        ]
+
+                        version.steps = []
+                        for idx, step_text in enumerate(steps):
+                            minutes = self.extract_minutes(step_text)
+                            version.steps.append(DBStep(
+                                step_id=str(uuid.uuid4()),
+                                version_id=version.version_id,
+                                step_order=idx,
+                                instruction=step_text,
+                                minutes=minutes
+                            ))
+
+                        version.base_servings = servings if servings is not None else db_recipe.servings
+                        # Recipe.servings stays immutable (original submission)
+                        # version.base_servings holds this version's serving size
+                        db_recipe.dish_name = title
+
+                        self.db.commit()
+                        self.db.refresh(db_recipe)
+                        print(f"[DEBUG] Draft updated and returned: id={getattr(db_recipe, 'recipe_id', None)}")
+                        return self._to_model(db_recipe)
+
+                print(f"[DEBUG] Existing draft could not be updated; returning original model")
                 return existing_draft
         import datetime
         recipe_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
         db_recipe = DBRecipe(
             recipe_id=recipe_id,
+            version_id=None,  # Set after version is persisted
             dish_name=title,
             servings=servings if servings is not None else 1,
             created_by=submitted_by,
             is_published=approved,
-            created_at=datetime.datetime.utcnow(),
-            current_version_id=version_id
+            created_at=datetime.datetime.utcnow()
         )
         print(f"[DEBUG] db_recipe created: {db_recipe}")
         db_version = self._create_version(version_id, recipe_id, submitted_by, servings, ingredients, steps)
         db_recipe.versions.append(db_version)
+        # Add version to session FIRST and flush to ensure it's persisted
+        self.db.add(db_version)
+        self.db.flush()  # Force immediate insertion of RecipeVersion
+        # Now set the version_id on the recipe after version is persisted
+        db_recipe.version_id = version_id
         self.db.add(db_recipe)
-        print(f"[DEBUG] db_recipe and db_version added to session")
+        print(f"[DEBUG] db_version and db_recipe added to session")
         self.db.commit()
         print(f"[DEBUG] db_recipe committed")
         self.db.refresh(db_recipe)
@@ -114,7 +174,7 @@ class PostgresRecipeRepository:
             submitted_by=submitted_by,
             submitted_at=datetime.datetime.utcnow(),
             status="submitted",
-            validator_confidence=0.0,
+            ai_confidence_score=0.0,
             base_servings=servings,
             # avg_rating removed from RecipeVersion (field deleted)
         )
@@ -147,6 +207,25 @@ class PostgresRecipeRepository:
             ))
         return db_version
 
+    def add_version_to_recipe(self, recipe_id: str, ingredients, steps, servings, submitted_by=None):
+        """Add a new version to an existing recipe. Returns the updated Recipe model."""
+        import datetime
+        db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        if not db_recipe:
+            raise ValueError(f"Recipe {recipe_id} not found")
+        
+        version_id = str(uuid.uuid4())
+        db_version = self._create_version(version_id, recipe_id, submitted_by, servings, ingredients, steps)
+        db_recipe.versions.append(db_version)
+        # Recipe.servings stays immutable (original value)
+        # New version's servings stored in version.base_servings
+        
+        self.db.add(db_version)
+        self.db.commit()
+        self.db.refresh(db_recipe)
+        print(f"[DEBUG] Added version {version_id} to recipe {recipe_id}, new servings: {servings}")
+        return self._to_model(db_recipe)
+
     """Repository using PostgreSQL for persistent storage."""
 
     def __init__(self, db: Session):
@@ -176,12 +255,12 @@ class PostgresRecipeRepository:
 
         db_recipe = DBRecipe(
             recipe_id=recipe_id,
+            version_id=None,  # Set after version is persisted
             dish_name=recipe.title,
             servings=recipe.servings if recipe.servings is not None else 1,
             created_by=created_by,
             is_published=recipe.approved,
-            created_at=datetime.datetime.utcnow(),
-            current_version_id=version_id
+            created_at=datetime.datetime.utcnow()
         )
         db_version = self._create_version(
             version_id=version_id,
@@ -193,6 +272,11 @@ class PostgresRecipeRepository:
         )
         db_recipe.versions.append(db_version)
         print(f"[DEBUG] PostgresRecipeRepository.add: DBRecipe before add: recipe_id={db_recipe.recipe_id}, is_published={db_recipe.is_published}, created_by={db_recipe.created_by}")
+        # Add version to session FIRST and flush to ensure it's persisted
+        self.db.add(db_version)
+        self.db.flush()  # Force immediate insertion of RecipeVersion
+        # Now set the version_id on the recipe after version is persisted
+        db_recipe.version_id = version_id
         self.db.add(db_recipe)
         self.db.commit()
         self.db.refresh(db_recipe)
@@ -245,7 +329,7 @@ class PostgresRecipeRepository:
             raise ValueError(f"Recipe {recipe.id} not found")
 
         db_recipe.dish_name = recipe.title
-        db_recipe.servings = recipe.servings
+        # Recipe.servings is immutable - do not update
         # Only set is_published to True if recipe.approved is True
         if recipe.approved:
             db_recipe.is_published = True
@@ -261,20 +345,23 @@ class PostgresRecipeRepository:
                 if user_id and rating_value is not None:
                     # Ensure rating is within 0-5
                     rating_value = min(max(rating_value, 0), 5)
-                    feedback = self.db.query(Feedback).filter(Feedback.version_id == recipe.current_version_id, Feedback.user_id == user_id).first()
-                    if feedback:
-                        feedback.rating = rating_value
-                    else:
-                        from datetime import datetime
-                        feedback = Feedback(
-                            feedback_id=str(uuid.uuid4()),
-                            recipe_id=recipe.id,
-                            user_id=user_id,
-                            created_at=datetime.utcnow(),
-                            rating=rating_value,
-                            comment=None
-                        )
-                        self.db.add(feedback)
+                    # Use latest version for feedback
+                    latest_version = db_recipe.versions[-1] if db_recipe.versions else None
+                    if latest_version:
+                        feedback = self.db.query(Feedback).filter(Feedback.version_id == latest_version.version_id, Feedback.user_id == user_id).first()
+                        if feedback:
+                            feedback.rating = rating_value
+                        else:
+                            from datetime import datetime
+                            feedback = Feedback(
+                                feedback_id=str(uuid.uuid4()),
+                                version_id=latest_version.version_id,
+                                user_id=user_id,
+                                created_at=datetime.utcnow(),
+                                rating=rating_value,
+                                comment=None
+                            )
+                            self.db.add(feedback)
         # Recalculate avg_rating logic removed (field deleted)
 
         self.db.commit()
@@ -291,16 +378,8 @@ class PostgresRecipeRepository:
     def _to_model(self, db_recipe: DBRecipe) -> RecipeModel:
         """Convert database model to Recipe model."""
         print(f"[DEBUG] _to_model called with db_recipe: {db_recipe}")
-        # Find the current version
-        current_version = None
-        if db_recipe.current_version_id:
-            for v in db_recipe.versions:
-                if v.version_id == db_recipe.current_version_id:
-                    current_version = v
-                    break
-        if not current_version and db_recipe.versions:
-            # fallback: use latest version
-            current_version = db_recipe.versions[-1]
+        # Get the latest version (always use latest, never track mutable current_version_id)
+        current_version = db_recipe.versions[-1] if db_recipe.versions else None
         if current_version:
             ingredients = [
                 Ingredient(name=ing.name, quantity=ing.quantity, unit=ing.unit)
@@ -323,7 +402,8 @@ class PostgresRecipeRepository:
             servings = 1
         # Fetch ratings from Feedback table and ensure 0-5 limit
         from Module.database import Feedback
-        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == getattr(db_recipe, 'current_version_id', None), Feedback.rating != None).all()
+        latest_version = db_recipe.versions[-1] if db_recipe.versions else None
+        feedbacks = self.db.query(Feedback).filter(Feedback.version_id == (latest_version.version_id if latest_version else None), Feedback.rating != None).all()
         safe_ratings = [min(max(f.rating, 0), 5) for f in feedbacks]
         avg_rating = round(sum(safe_ratings) / len(safe_ratings), 2) if safe_ratings else 0.0
         model = RecipeModel(
@@ -334,7 +414,7 @@ class PostgresRecipeRepository:
             servings=servings,
             metadata={},
             ratings=safe_ratings,
-            validator_confidence=0.0,
+            ai_confidence_score=0.0,
             popularity=0,
             approved=db_recipe.is_published
         )

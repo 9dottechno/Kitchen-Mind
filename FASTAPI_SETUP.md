@@ -405,6 +405,78 @@ ProgrammingError: relation "recipes" does not exist
 
 ## 🔄 Workflow
 
+### Authentication & Token Expiration
+
+The API uses JWT tokens with human-readable expiration times:
+
+**Login Endpoint** (`POST /login`)
+- Request: Email and password
+- Response: OTP request initiated
+
+**Verify OTP Endpoint** (`POST /verify-otp`)
+- Request: Email and OTP
+- Response includes:
+  - `access_token`: JWT token for API requests (15 minutes)
+  - `access_token_expires_at`: Human-readable format, e.g., "2026-01-25 16:17:39 UTC"
+  - `refresh_token`: Token to get new access token (7 days)
+  - `refresh_token_expires_at`: Human-readable format
+
+Example response:
+```json
+{
+  "status": true,
+  "message": "Welcome! You've successfully logged in.",
+  "data": {
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "first_name": "Alice",
+    "last_name": "Trainer",
+    "email": "alice@example.com",
+    "phone_number": "9876543210",
+    "role": "trainer",
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "access_token_expires_at": "2026-01-25 16:17:39 UTC",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token_expires_at": "2026-02-01 16:17:39 UTC"
+  }
+}
+```
+
+**Refresh Token Endpoint** (`POST /refresh-token`)
+- Request: Expired refresh token
+- Response: New access token with expiration time
+
+Example response:
+```json
+{
+  "status": true,
+  "message": "Token refreshed",
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "access_token_expires_at": "2026-01-25 16:20:00 UTC"
+  }
+}
+```
+
+**Protected Routes** (`GET /protected`)
+- Returns authenticated user data with token expiration
+- Token expiration shown as `token_expires_at` in human-readable format
+
+Example response:
+```json
+{
+  "status": true,
+  "message": "You are authenticated",
+  "data": {
+    "user": {
+      "user_id": "550e8400-e29b-41d4-a716-446655440000",
+      "role": "trainer",
+      "email": "alice@example.com",
+      "token_expires_at": "2026-01-25 16:17:39 UTC"
+    }
+  }
+}
+```
+
 ### Basic Recipe Flow
 
 1. **Trainer** submits recipes

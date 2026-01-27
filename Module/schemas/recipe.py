@@ -63,10 +63,42 @@ class RecipeResponse(BaseModel):
 
 class RecipeSynthesisRequest(BaseModel):
     """Schema for recipe synthesis request."""
-    dish_name: str
-    servings: int = 2
-    ingredients: Optional[List[IngredientCreate]] = None
-    steps: Optional[List[str]] = None
+    dish_name: str = Field(..., min_length=3, max_length=100, description="Dish name (3-100 chars)")
+    servings: int = Field(2, ge=1, le=100, description="Servings must be 1-100")
+
+    @field_validator('dish_name')
+    @classmethod
+    def validate_dish_name_format(cls, v: str) -> str:
+        """Validate dish name format only (content validation happens in service layer)."""
+        v = v.strip()
+        if not re.match(r"^[a-zA-Z0-9\s\-\.,'&()]+$", v):
+            raise ValueError('Dish name can only contain letters, numbers, spaces, hyphens, dots, commas, apostrophes, ampersands, and parentheses')
+        return v
+
+class RecipeScoreResponse(BaseModel):
+    """Schema for recipe score response (all scores displayed as 0-5 scale)."""
+    rating: float = Field(..., description="User rating on 0-5 scale")
+    ingredient_authenticity_score: float = Field(..., description="Ingredient authenticity on 0-5 scale")
+    serving_scalability_score: float = Field(..., description="Serving scalability on 0-5 scale")
+    popularity_score: float = Field(..., description="Popularity score on 0-5 scale")
+    ai_confidence_score: float = Field(..., description="Overall AI confidence on 0-5 scale")
+    final_score: float = Field(..., description="Final composite score on 0-5 scale")
+    calculated_at: str
+
+    @classmethod
+    def from_db(cls, db_score):
+        """Convert scores from database (already 0-5 scale) to response format."""
+        if not db_score:
+            return None
+        return cls(
+            rating=round((db_score.rating or 0), 2),
+            ingredient_authenticity_score=round((db_score.ingredient_authenticity_score or 0), 2),
+            serving_scalability_score=round((db_score.serving_scalability_score or 0), 2),
+            popularity_score=round((db_score.popularity_score or 0), 2),
+            ai_confidence_score=round((db_score.ai_confidence_score or 0), 2),
+            final_score=round((db_score.final_score or 0), 2),
+            calculated_at=str(db_score.calculated_at) if db_score.calculated_at else None
+        )
 
 class ValidationResponse(BaseModel):
     """Schema for recipe validation response."""

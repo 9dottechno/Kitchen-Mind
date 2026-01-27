@@ -44,6 +44,16 @@ class RegisterRequest(BaseModel):
         pattern = r'^(?:\+91)?[6-9]\d{9}$'
         if not re.match(pattern, v):
             raise ValueError("Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9).")
+        # Additional real-world checks to avoid placeholders
+        normalized = v.strip()
+        if normalized.startswith('+91'):
+            normalized = normalized[3:]
+        # Reject all same-digit numbers (e.g., 9999999999)
+        if len(set(normalized)) == 1:
+            raise ValueError("Phone number looks like a placeholder (repeated digits). Please provide a real contact number.")
+        # Reject obvious sequences
+        if normalized in {"1234567890", "9876543210"}:
+            raise ValueError("Phone number looks like a placeholder (sequential digits). Please provide a real contact number.")
         return v
 
     @validator('password', pre=True, always=True)
@@ -76,34 +86,26 @@ class RegisterResponse(BaseModel):
     status: bool
 
 class UserUpdate(BaseModel):
-    """Schema for updating user information."""
-    name: Optional[str] = None
-    email: Optional[str] = None
-    login_identifier: Optional[str] = None
-    password_hash: Optional[str] = None
-    auth_type: Optional[str] = None
-    role_id: Optional[str] = None
+    """Schema for updating user information. Only allows safe fields to be modified."""
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone_number: Optional[str] = None
     dietary_preference: Optional[str] = None
-    rating_score: Optional[float] = None
-    credit: Optional[float] = None
-    last_login_at: Optional[str] = None
-    is_super_admin: Optional[bool] = None
-    created_by: Optional[str] = None
-    admin_action_type: Optional[str] = None
-    admin_action_target_type: Optional[str] = None
-    admin_action_target_id: Optional[str] = None
-    admin_action_description: Optional[str] = None
-    admin_action_created_at: Optional[str] = None
 
 class UserResponse(BaseModel):
     """Schema for user response."""
     user_id: str
     name: str
     email: str
-    login_identifier: str
     role_id: str
     dietary_preference: Optional[str] = None
     rating_score: float
     credit: float
     created_at: Optional[str] = None
     last_login_at: Optional[str] = None
+
+class UserProfileResponse(BaseModel):
+    """Schema for user profile response - minimal fields."""
+    first_name: str
+    last_name: str
+    phone_number: str
