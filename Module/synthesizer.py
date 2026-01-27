@@ -2312,7 +2312,7 @@ class Synthesizer:
                 steps=out_lines,
                 servings=requested_servings,
                 metadata=meta,
-                validator_confidence=validator_conf,
+                ai_confidence_score=validator_conf,
                 approved=True
             )
 
@@ -2987,15 +2987,13 @@ class Synthesizer:
         validator_conf = round(min(1.0, ai_conf * 0.8), 3)
         print(f"DEBUG: final ai_conf={ai_conf}, validator_conf={validator_conf}")
 
-        # Prepare title
-        
+        # Prepare title - use clean dish name without prefix or suffix
         base_title = top_recipes[0].title.split(':')[0].strip()
         # Remove any previous '(for N servings)' from the base title
         base_title = re.sub(r'\s*\(for \d+ servings\)$', '', base_title)
-        if not base_title.startswith("Synthesized --"):
-            title = f"Synthesized -- {base_title} (for {requested_servings} servings)"
-        else:
-            title = f"{base_title} (for {requested_servings} servings)"
+        # Remove "Synthesized --" prefix if present
+        base_title = re.sub(r'^Synthesized\s*--\s*', '', base_title)
+        title = base_title
         print("DEBUG: final recipe title =", title)
 
         # Metadata
@@ -3026,6 +3024,6 @@ class Synthesizer:
             steps=out_lines,
             servings=requested_servings,
             metadata=meta,
-            validator_confidence=validator_conf,
+            ai_confidence_score=validator_conf,
             approved=True
         )

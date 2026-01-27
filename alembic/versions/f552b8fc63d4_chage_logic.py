@@ -1,8 +1,8 @@
-"""one step back
+"""chage logic
 
-Revision ID: 4f8c86d0cd08
+Revision ID: f552b8fc63d4
 Revises: 
-Create Date: 2026-01-24 12:34:47.632184
+Create Date: 2026-01-26 17:35:53.988294
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '4f8c86d0cd08'
+revision: str = 'f552b8fc63d4'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

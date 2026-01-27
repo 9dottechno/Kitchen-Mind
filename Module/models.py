@@ -22,7 +22,7 @@ class Recipe:
     servings: int  # baseline servings
     metadata: Dict[str, Any] = field(default_factory=dict)
     ratings: List[float] = field(default_factory=list)
-    validator_confidence: float = 0.0
+    ai_confidence_score: float = 0.0
     popularity: int = 0
     approved: bool = False
     rejection_suggestions: List[str] = field(default_factory=list)
@@ -40,7 +40,7 @@ class Recipe:
             servings=target_servings,
             metadata={**self.metadata, "scaled_from": self.servings},
             ratings=self.ratings.copy(),
-            validator_confidence=self.validator_confidence,
+            ai_confidence_score=self.ai_confidence_score,
             popularity=self.popularity,
             approved=self.approved,
         )

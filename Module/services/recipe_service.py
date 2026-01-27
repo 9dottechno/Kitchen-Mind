@@ -9,7 +9,7 @@ from Module.database import Recipe as DBRecipe, RecipeVersion, Validation, Recip
 from Module.repository_postgres import PostgresRecipeRepository
 from Module.schemas.recipe import (
     RecipeCreate, RecipeResponse, RecipeSynthesisRequest, 
-    ValidationResponse, IngredientCreate
+    ValidationResponse, IngredientCreate, RecipeScoreResponse
 )
 
 class RecipeService:
@@ -34,42 +34,59 @@ class RecipeService:
         if str(trainer_role).lower() not in ["trainer", "admin"]:
             raise PermissionError("Only trainers can submit recipes")
         
-        # Check for existing recipe with same title and servings
+        # Check if a recipe with this title already exists for this trainer
+        # Allow same title with different servings as separate versions, but block exact duplicate
         existing_recipe = self.db.query(DBRecipe).filter(
             DBRecipe.dish_name == recipe.title,
-            DBRecipe.servings == recipe.servings,
             DBRecipe.created_by == trainer_id
         ).first()
+        
         if existing_recipe:
-            raise ValueError("Recipe with this title and servings already exists for this trainer")
-        
-        if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
-            ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
+            # If a version with the same servings already exists, block duplicate submission
+            duplicate_version = self.db.query(RecipeVersion).filter(
+                RecipeVersion.recipe_id == existing_recipe.recipe_id,
+                RecipeVersion.base_servings == recipe.servings
+            ).first()
+            if duplicate_version:
+                raise ValueError("A recipe with the same title and servings already exists for this trainer. Please edit the existing recipe or choose different servings.")
+
+            print(f"[DEBUG] Recipe '{recipe.title}' exists; adding as new version with different servings")
+            # Add new version for different servings
+            recipe_obj = self.repo.add_version_to_recipe(
+                recipe_id=existing_recipe.recipe_id,
+                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} 
+                            for ing in recipe.ingredients],
+                steps=recipe.steps,
+                servings=recipe.servings,
+                submitted_by=trainer_id
+            )
         else:
-            ingredients_obj = recipe.ingredients
-        
-        recipe_obj = self.repo.create_recipe(
-            title=recipe.title,
-            ingredients=ingredients_obj,
-            steps=recipe.steps,
-            servings=recipe.servings,
-            submitted_by=trainer.user_id
-        )
-        
-        # In-memory sync removed (caused dataclass signature mismatch)
+            print(f"[DEBUG] Creating new recipe '{recipe.title}'")
+            # Create new recipe only if it doesn't exist
+            if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
+                ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
+            else:
+                ingredients_obj = recipe.ingredients
+            
+            recipe_obj = self.repo.create_recipe(
+                title=recipe.title,
+                ingredients=ingredients_obj,
+                steps=recipe.steps,
+                servings=recipe.servings,
+                submitted_by=trainer_id
+            )
         
         version_id = None
         db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-        if db_recipe and hasattr(db_recipe, 'current_version_id'):
-            version_id = db_recipe.current_version_id
+        if db_recipe and db_recipe.versions:
+            version_id = db_recipe.versions[-1].version_id
 
-        # Auto-validate immediately after submission so trainers see approved recipes without extra calls
+        # Auto-validate immediately after submission
         approved_status = False
         if version_id:
             try:
                 print(f"[DEBUG] Auto-validation starting for version_id={version_id}")
                 self.validate_recipe(version_id)
-                # Query the validation record to get the approved status from DB
                 latest_validation = (
                     self.db.query(Validation)
                     .filter(Validation.version_id == version_id)
@@ -77,10 +94,9 @@ class RecipeService:
                     .first()
                 )
                 approved_status = latest_validation.approved if latest_validation else False
-                print(f"[DEBUG] Auto-validation finished for version_id={version_id}, approved={approved_status}")
+                print(f"[DEBUG] Auto-validation finished, approved={approved_status}")
             except Exception as val_e:
-                # Keep submission successful even if validation fails; recipe remains pending
-                print(f"[WARN] Auto validation failed for version {version_id}: {val_e}")
+                print(f"[WARN] Auto validation failed: {val_e}")
                 import traceback
                 traceback.print_exc()
         
@@ -88,11 +104,11 @@ class RecipeService:
             recipe_id=recipe_obj.id,
             version_id=version_id,
             title=recipe_obj.title,
-            servings=recipe_obj.servings,
+            servings=recipe.servings,
             approved=approved_status,
             popularity=getattr(recipe_obj, 'popularity', 0),
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
-            steps=getattr(recipe_obj, 'steps', [])
+            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in recipe.ingredients],
+            steps=recipe.steps
         )
     
     def list_recipes(self, approved_only: bool = True) -> List[RecipeResponse]:
@@ -106,8 +122,8 @@ class RecipeService:
         for r in recipes:
             version_id = None
             db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == r.id).first()
-            if db_recipe and hasattr(db_recipe, 'current_version_id'):
-                version_id = db_recipe.current_version_id
+            if db_recipe and db_recipe.versions:
+                version_id = db_recipe.versions[-1].version_id
             response.append(RecipeResponse(
                 recipe_id=r.id,
                 version_id=version_id,
@@ -185,23 +201,21 @@ class RecipeService:
             'servings': request.servings
         }
         
-        # Check if a recipe for this dish already exists (by this user)
-        # Look for recipes containing the dish name (not just synthesized ones)
-        print(f"[DEBUG] Searching for existing recipes with dish_name containing '{request.dish_name}' for user {user_id}")
+        # Check if a recipe for this dish already exists (exact match across all users)
+        print(f"[DEBUG] Searching for existing recipes with dish_name='{request.dish_name}'")
         
         existing_recipes = self.db.query(DBRecipe).filter(
-            DBRecipe.created_by == user_id,
-            DBRecipe.dish_name.ilike(f"%{request.dish_name}%")
+            DBRecipe.dish_name == request.dish_name
         ).all()
         
         print(f"[DEBUG] Found {len(existing_recipes)} recipe(s) matching dish name '{request.dish_name}'")
         for r in existing_recipes:
-            print(f"[DEBUG]   - {r.recipe_id}: {r.dish_name} (servings={r.servings})")
+            print(f"[DEBUG]   - {r.recipe_id}: {r.dish_name} (servings={r.servings}, published={r.is_published})")
         
         existing_recipe = None
         if existing_recipes:
-            # Pick the first one (should be the recipe to add versions to)
-            existing_recipe = existing_recipes[0]
+            # Prefer published recipes as base, fallback to first unpublished
+            existing_recipe = next((r for r in existing_recipes if r.is_published), existing_recipes[0])
             print(f"[DEBUG] Using recipe {existing_recipe.recipe_id} as base for versioning")
             
             # Check if a version with this EXACT servings already exists
@@ -254,14 +268,14 @@ class RecipeService:
                 servings=request.servings,
                 submitted_by=user.user_id
             )
-            # Get the newly created version ID
+            # Get the newly created version ID (latest version)
             db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == existing_recipe.recipe_id).first()
-            version_id = db_recipe.current_version_id if db_recipe else None
+            version_id = db_recipe.versions[-1].version_id if db_recipe and db_recipe.versions else None
             print(f"[DEBUG] New version_id: {version_id}")
         else:
             print(f"[DEBUG] Creating new recipe for {request.dish_name}")
             recipe_obj = self.repo.create_recipe(
-                title=f"Synthesized -- {request.dish_name} (for {request.servings} servings)",
+                title=request.dish_name,
                 ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
                 steps=result.steps,
                 servings=request.servings,
@@ -270,8 +284,8 @@ class RecipeService:
             )
             version_id = None
             db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-            if db_recipe and hasattr(db_recipe, 'current_version_id'):
-                version_id = db_recipe.current_version_id
+            if db_recipe and db_recipe.versions:
+                version_id = db_recipe.versions[-1].version_id
             print(f"[DEBUG] New recipe_id: {recipe_obj.id}, version_id: {version_id}")
         
         return RecipeResponse(
@@ -329,6 +343,9 @@ class RecipeService:
         )
         self.db.add(validation)
         
+        # Store version-specific AI confidence score (convert 0-1 to 0-5 scale)
+        version.ai_confidence_score = confidence * 5.0
+        
         if approved:
             recipe.is_published = True
         
@@ -357,10 +374,9 @@ class RecipeService:
         
         mock_recipe = MockRecipe(recipe, version)
         ai_scores = {
-            'validator_confidence_score': scorer.score(mock_recipe),
             'ingredient_authenticity_score': scorer.ingredient_authenticity_score(mock_recipe),
             'serving_scalability_score': scorer.serving_scalability_score(mock_recipe),
-            'ai_confidence_score': scorer.ai_confidence_score(mock_recipe)
+            'ai_confidence_score': confidence * 5.0  # Convert 0-1 to 0-5 scale
         }
         popularity_score = scorer.popularity_score(mock_recipe)
         update_recipe_score(self.db, recipe.recipe_id, ai_scores=ai_scores, popularity=popularity_score)
@@ -420,10 +436,11 @@ class RecipeService:
         feedback = self.repo.add_rating(version_id, user_id, rating, comment)
         
         from Module.database import update_recipe_score
-        update_recipe_score(self.db, recipe_id)
+        update_recipe_score(self.db, recipe_id, version_id=version_id)
         
         score = self.db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
-        avg_rating = score.user_rating_score if score and score.user_rating_score is not None else 0.0
+        # Both feedback and rating are on 0-5 scale
+        avg_rating = (score.rating or 0.0) if score else 0.0
         
         return {
             "recipe_id": recipe_id,

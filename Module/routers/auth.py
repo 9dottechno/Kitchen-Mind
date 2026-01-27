@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -35,10 +35,10 @@ def login_user(request: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/verify-otp")
-def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db)):
+def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db), http_request: Request = None):
     try:
         service = AuthService(db)
-        user_data = service.verify_otp(request)
+        user_data = service.verify_otp(request, http_request)
         return {
             "status": True,
             "message": "Welcome! You've successfully logged in.",

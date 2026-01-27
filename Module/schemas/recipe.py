@@ -75,6 +75,31 @@ class RecipeSynthesisRequest(BaseModel):
             raise ValueError('Dish name can only contain letters, numbers, spaces, hyphens, dots, commas, apostrophes, ampersands, and parentheses')
         return v
 
+class RecipeScoreResponse(BaseModel):
+    """Schema for recipe score response (all scores displayed as 0-5 scale)."""
+    rating: float = Field(..., description="User rating on 0-5 scale")
+    ingredient_authenticity_score: float = Field(..., description="Ingredient authenticity on 0-5 scale")
+    serving_scalability_score: float = Field(..., description="Serving scalability on 0-5 scale")
+    popularity_score: float = Field(..., description="Popularity score on 0-5 scale")
+    ai_confidence_score: float = Field(..., description="Overall AI confidence on 0-5 scale")
+    final_score: float = Field(..., description="Final composite score on 0-5 scale")
+    calculated_at: str
+
+    @classmethod
+    def from_db(cls, db_score):
+        """Convert scores from database (already 0-5 scale) to response format."""
+        if not db_score:
+            return None
+        return cls(
+            rating=round((db_score.rating or 0), 2),
+            ingredient_authenticity_score=round((db_score.ingredient_authenticity_score or 0), 2),
+            serving_scalability_score=round((db_score.serving_scalability_score or 0), 2),
+            popularity_score=round((db_score.popularity_score or 0), 2),
+            ai_confidence_score=round((db_score.ai_confidence_score or 0), 2),
+            final_score=round((db_score.final_score or 0), 2),
+            calculated_at=str(db_score.calculated_at) if db_score.calculated_at else None
+        )
+
 class ValidationResponse(BaseModel):
     """Schema for recipe validation response."""
     validation_id: str
