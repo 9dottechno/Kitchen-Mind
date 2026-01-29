@@ -39,6 +39,7 @@ run_api.bat  # Windows
 chmod +x run_api.sh && ./run_api.sh  # Linux/Mac
 ```
 
+
 ### 7. Access the API
 - API Base URL: http://localhost:8000
 - Interactive Docs: http://localhost:8000/docs (Swagger UI)
@@ -54,8 +55,8 @@ See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for full schema and endpoint de
 
 ## Main Endpoints
 
-- `POST /user` - Create user
-- `GET /user/{user_id}` - Get user details
+- `POST /users` - Create user
+- `GET /users/{user_id}` - Get user details
 - `POST /recipes` - Submit recipe (trainer only)
 - `GET /recipes` - List recipes
 - `GET /recipes/{recipe_id}` - Get recipe details
@@ -63,7 +64,7 @@ See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for full schema and endpoint de
 - `POST /recipes/{recipe_id}/validate` - Validate recipe (validator only)
 - `POST /recipes/{recipe_id}/rate` - Rate recipe
 - `POST /recipes/synthesize` - Synthesize recipes
-- `POST /event/plan` - Plan event with recipes
+- `POST /events/plan` - Plan event with recipes
 - `GET /health` - Health check
 
 See [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for request/response examples and more endpoints.

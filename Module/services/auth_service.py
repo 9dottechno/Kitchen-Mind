@@ -1,4 +1,5 @@
 import hashlib
+import random
 import uuid
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
@@ -14,7 +15,7 @@ from Module.token_utils import (
 )
 from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest, ChangePasswordRequest
 
-STATIC_OTP = "123456"
+
 
 class AuthService:
     """Service for authentication-related business logic."""
@@ -33,12 +34,14 @@ class AuthService:
         if db_user.password_hash != password_hash:
             raise PermissionError("Invalid email or password")
         
-        db_user.otp_hash = hashlib.sha256(STATIC_OTP.encode()).hexdigest()
+        # Generate a random 6-digit OTP
+        otp = str(random.randint(100000, 999999))
+        db_user.otp_hash = hashlib.sha256(otp.encode()).hexdigest()
         db_user.otp_expires_at = get_india_time() + timedelta(days=60)
         db_user.otp_verified = False
         self.db.commit()
         
-        print(f"[OTP] For login {request.email}: {STATIC_OTP}")
+        print(f"[OTP] For login {request.email}: {otp}")
         return {"email": request.email}
     
     def verify_otp(self, request: OTPVerifyRequest, request_ctx=None) -> dict:

@@ -1,8 +1,6 @@
-
 # KitchenMind - Modular AI Recipe Platform
 
-KitchenMind is a scalable, community-driven AI recipe platform supporting 100k+ members and millions of recipes, with a FastAPI REST API and PostgreSQL backend.
-
+KitchenMind is a scalable, modular AI recipe platform supporting 100k+ members and millions of recipes, with a FastAPI REST API and PostgreSQL backend.
 
 ## Quick Start
 
@@ -32,12 +30,29 @@ KitchenMind is a scalable, community-driven AI recipe platform supporting 100k+ 
 ## Project Structure
 
 ```
-Kitchen Mind/
-├── Module/                    # Main package directory
-│   ├── __init__.py           # Package initialization and exports
-│   ├── models.py             # Data models (Ingredient, Recipe, User)
-│   ├── repository.py         # Recipe storage and retrieval
-│   ├── vector_store.py       # Semantic search functionality
+Kitchen-Mind/
+├── Module/                  # Main package directory
+│   ├── __init__.py          # Package initialization and exports
+│   ├── models.py            # Data models (Ingredient, Recipe, User)
+│   ├── repository.py        # In-memory recipe storage
+│   ├── repository_postgres.py # PostgreSQL-backed recipe storage
+│   ├── vector_store.py      # Semantic search functionality
+│   ├── scoring.py           # Recipe ranking and scoring
+│   ├── synthesizer.py       # Recipe synthesis and merging
+│   ├── token_economy.py     # RMDT token rewards system
+│   ├── event_planner.py     # Event planning functionality
+│   ├── controller.py        # Main KitchenMind controller
+│   └── ...                  # Routers, schemas, services
+├── api.py                   # FastAPI application
+├── setup_db.py              # Database setup script
+├── test_api.py              # API tests
+├── run_api.bat              # Windows startup
+├── run_api.sh               # Linux/Mac startup
+├── requirements.txt         # Dependencies
+├── .env                     # Environment config
+├── API_DOCUMENTATION.md     # API docs
+└── README.md                # This file
+```
 │   ├── scoring.py            # Recipe ranking and scoring
 │   ├── synthesizer.py        # Recipe synthesis and merging
 │   ├── token_economy.py      # RMDT token rewards system

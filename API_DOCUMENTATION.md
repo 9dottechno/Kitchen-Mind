@@ -5,35 +5,28 @@
 
 KitchenMind API is a FastAPI-based REST API for recipe management, synthesis, and event planning with a PostgreSQL backend. It supports user management, recipe submission/validation, synthesis, event planning, and more.
 
-
 ## Quick Start
 
 1. **Install Python 3.8+ and PostgreSQL 12+**
 2. **Clone this repo and create a virtual environment**
 3. **Install dependencies:**
-  ```bash
-  pip install -r requirements.txt
-  ```
+    ```bash
+    pip install -r requirements.txt
+    ```
 4. **Configure your database in `.env`**
 5. **Initialize the database:**
-  ```bash
-  python setup_db.py
-  ```
+    ```bash
+    python setup_db.py
+    ```
 6. **Run the API server:**
-  ```bash
-  run_api.bat  # Windows
-  # or
-  ./run_api.sh # Linux/Mac
-  ```
+    ```bash
+    run_api.bat  # Windows
+    # or
+    ./run_api.sh # Linux/Mac
+    ```
 7. **Access the API docs:**
-  - Swagger UI: http://localhost:8000/docs
-  - ReDoc: http://localhost:8000/redoc
-
-7. **Access the API**
-- API: http://localhost:8000
-- Documentation: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
+    - Swagger UI: http://localhost:8000/docs
+    - ReDoc: http://localhost:8000/redoc
 
 ---
 
@@ -45,16 +38,15 @@ KitchenMind API is a FastAPI-based REST API for recipe management, synthesis, an
 - `GET /` — API info
 - `GET /health` — Health check
 
-
 ### User Management
 
-- `POST /user` — Create user
-- `GET /user/{user_id}` — Get user details
+- `POST /users` — Create user
+- `GET /users/{user_id}` — Get user details
 
-#### GET `/user/{user_id}`
+#### GET `/users/{user_id}`
 Get user details
 ```
-GET /user/uuid-string
+GET /users/uuid-string
 ```
 
 Response:
@@ -73,7 +65,6 @@ Response:
 ```
 
 ---
-
 
 ### Recipe Management
 
@@ -142,17 +133,15 @@ Response:
 
 ---
 
-
 ### Recipe Synthesis
 
 - `POST /recipes/synthesize` — Synthesize recipes
 
 ---
 
-
 ### Event Planning
 
-- `POST /event/plan` — Plan event with recipes
+- `POST /events/plan` — Plan event with recipes
 
 ---
 
